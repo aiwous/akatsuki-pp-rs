@@ -1,6 +1,6 @@
 [package]
 name = "akatsuki-pp"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 authors = ["MaxOhn <ohn.m@hotmail.de>", "tsunyoku <tsunyoku@gmail.com>", "Aochi <me@aochi.uk>"]
 license = "MIT"
