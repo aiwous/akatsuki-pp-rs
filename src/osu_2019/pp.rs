@@ -270,31 +270,31 @@ impl<'m> OsuPP<'m> {
         }
 
         let mut aim_value = self.compute_aim_value(total_hits, effective_miss_count);
-        let speed_value = self.compute_speed_value(total_hits, effective_miss_count);
+        let mut speed_value = self.compute_speed_value(total_hits, effective_miss_count);
         let acc_value = self.compute_accuracy_value(total_hits);
 
-        let mut acc_depression = 1.0;
-
         let difficulty = self.attributes.as_ref().unwrap();
+
         let streams_nerf =
             ((difficulty.aim_strain / difficulty.speed_strain) * 100.0).round() / 100.0;
 
         if streams_nerf < 1.09 {
-            let acc_factor = (1.0 - self.acc.unwrap()).abs();
-            acc_depression = (0.86 - acc_factor).max(0.5);
+            // slightly less nerfed if acc >98.5%
+            let acc_improvement = (self.acc.unwrap() - 0.985).max(0.0);
+            let acc_factor = 1.0 + (acc_improvement * 25.0).powf(2.0);
 
-            if acc_depression > 0.0 {
-                aim_value *= acc_depression;
-            }
+            let aim_nerf = (0.25 * acc_factor).min(1.0);
+            let speed_nerf = (0.35 * acc_factor).min(1.0);
+
+            aim_value *= aim_nerf;
+            speed_value *= speed_nerf;
         }
 
-        let pp = (aim_value.powf(1.185)
-            + speed_value.powf(0.83 * acc_depression)
-            + acc_value.powf(1.14))
-        .powf(1.0 / 1.1)
+        let pp = (aim_value.powf(1.185) + speed_value.powf(0.83) + acc_value.powf(1.14))
+            .powf(1.0 / 1.1)
             * multiplier;
 
-            OsuPerformanceAttributes {
+        OsuPerformanceAttributes {
             difficulty: self.attributes.unwrap(),
             pp_aim: aim_value as f64,
             pp_speed: speed_value as f64,
@@ -331,7 +331,7 @@ impl<'m> OsuPP<'m> {
         if effective_miss_count > 0.0 {
             let miss_penalty = self.calculate_miss_penalty(
                 effective_miss_count,
-                attributes.aim_difficult_strain_count
+                attributes.aim_difficult_strain_count,
             );
             aim_value *= miss_penalty;
         }
@@ -384,8 +384,7 @@ impl<'m> OsuPP<'m> {
 
         if len_bonus > 1.0 {
             len_bonus = len_bonus.powf(0.88);
-        } 
-
+        }
 
         speed_value *= len_bonus;
 
@@ -393,7 +392,7 @@ impl<'m> OsuPP<'m> {
         if effective_miss_count > 0.0 {
             let miss_penalty = self.calculate_miss_penalty(
                 effective_miss_count,
-                attributes.speed_difficult_strain_count
+                attributes.speed_difficult_strain_count,
             );
             speed_value *= miss_penalty;
         }
