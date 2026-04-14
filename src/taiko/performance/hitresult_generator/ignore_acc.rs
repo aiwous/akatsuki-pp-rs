@@ -20,7 +20,7 @@ impl HitResultGenerator<Taiko> for IgnoreAccuracy {
         };
 
         let (n300, n100) = match inspect.hitresult_priority {
-            HitResultPriority::BestCase => {
+            HitResultPriority::BestCase | HitResultPriority::Fastest => {
                 // First pass: assign specified values in priority order
                 let n300 = assign_specified(inspect.n300);
                 let n100 = assign_specified(inspect.n100);

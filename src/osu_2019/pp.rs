@@ -1,4 +1,4 @@
-use super::stars::{stars, OsuDifficultyAttributes, OsuPerformanceAttributes};
+use crate::osu_2019::stars::{stars, OsuDifficultyAttributes as Osu2019DifficultyAttributes, OsuPerformanceAttributes as Osu2019PerformanceAttributes};
 use crate::{Beatmap, GameMods};
 
 /// Calculator for pp on osu!standard maps.
@@ -31,7 +31,7 @@ use crate::{Beatmap, GameMods};
 #[derive(Clone, Debug)]
 pub struct OsuPP<'m> {
     map: Option<&'m Beatmap>,
-    attributes: Option<OsuDifficultyAttributes>,
+    attributes: Option<Osu2019DifficultyAttributes>,
     mods: GameMods,
     combo: Option<u32>,
     acc: Option<f32>,
@@ -66,7 +66,7 @@ impl<'m> OsuPP<'m> {
 
     /// Creates a new calculator for the given attributes.
     #[inline]
-    pub fn from_attributes(attributes: OsuDifficultyAttributes) -> Self {
+    pub fn from_attributes(attributes: Osu2019DifficultyAttributes) -> Self {
         Self {
             map: None,
             attributes: Some(attributes),
@@ -244,7 +244,7 @@ impl<'m> OsuPP<'m> {
 
     /// Returns an object which contains the pp and [`DifficultyAttributes`](crate::osu::DifficultyAttributes)
     /// containing stars and other attributes.
-    pub fn calculate(mut self) -> OsuPerformanceAttributes {
+    pub fn calculate(mut self) -> Osu2019PerformanceAttributes {
         if self.attributes.is_none() {
             let attributes = stars(
                 self.map.unwrap(),
@@ -297,7 +297,7 @@ impl<'m> OsuPP<'m> {
         .powf(1.0 / 1.1)
             * multiplier;
 
-        OsuPerformanceAttributes {
+        Osu2019PerformanceAttributes {
             difficulty: self.attributes.unwrap(),
             pp_aim: aim_value as f64,
             pp_speed: speed_value as f64,
@@ -501,19 +501,19 @@ impl<'m> OsuPP<'m> {
 /// Provides attributes for an osu! beatmap.
 pub trait OsuAttributeProvider {
     /// Returns the attributes of the map.
-    fn attributes(self) -> Option<OsuDifficultyAttributes>;
+    fn attributes(self) -> Option<Osu2019DifficultyAttributes>;
 }
 
-impl OsuAttributeProvider for OsuDifficultyAttributes {
+impl OsuAttributeProvider for Osu2019DifficultyAttributes {
     #[inline]
-    fn attributes(self) -> Option<OsuDifficultyAttributes> {
+    fn attributes(self) -> Option<Osu2019DifficultyAttributes> {
         Some(self)
     }
 }
 
-impl OsuAttributeProvider for OsuPerformanceAttributes {
+impl OsuAttributeProvider for Osu2019PerformanceAttributes {
     #[inline]
-    fn attributes(self) -> Option<OsuDifficultyAttributes> {
+    fn attributes(self) -> Option<Osu2019DifficultyAttributes> {
         Some(self.difficulty)
     }
 }

@@ -191,3 +191,7 @@ pub mod mania;
 
 /// Types used in and around this crate.
 pub mod model;
+
+/// Custom 2019 osu!standard calculations.
+pub mod osu_2019;
+

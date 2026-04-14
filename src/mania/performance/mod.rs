@@ -446,7 +446,7 @@ unsafe fn generate_state(perf: &mut ManiaPerformance) -> ManiaScoreState {
     let remain = total_hits.saturating_sub(hitresults.total_hits());
 
     match perf.hitresult_priority {
-        HitResultPriority::BestCase => {
+        HitResultPriority::BestCase | HitResultPriority::Fastest => {
             match (perf.n320, perf.n300, perf.n200, perf.n100, perf.n50) {
                 (None, ..) => hitresults.n320 += remain,
                 (_, None, ..) => hitresults.n300 += remain,
@@ -455,6 +455,7 @@ unsafe fn generate_state(perf: &mut ManiaPerformance) -> ManiaScoreState {
                 _ => hitresults.n50 += remain,
             }
         }
+
         HitResultPriority::WorstCase => {
             match (perf.n50, perf.n100, perf.n200, perf.n300, perf.n320) {
                 (None, ..) => hitresults.n50 += remain,

@@ -569,7 +569,7 @@ unsafe fn generate_state(perf: &mut OsuPerformance<'_>) -> OsuScoreState {
     let remain = total_hits.saturating_sub(hitresults.total_hits());
 
     match perf.hitresult_priority {
-        HitResultPriority::BestCase => match (perf.n300, perf.n100, perf.n50) {
+        HitResultPriority::BestCase | HitResultPriority::Fastest => match (perf.n300, perf.n100, perf.n50) {
             (None, ..) => hitresults.n300 += remain,
             (_, None, _) => hitresults.n100 += remain,
             (.., None) => hitresults.n50 += remain,

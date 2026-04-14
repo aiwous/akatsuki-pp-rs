@@ -198,7 +198,7 @@ impl HitResultGenerator<Mania> for Fast {
             let left = total_hits - hitresults.total_hits();
 
             match inspect.hitresult_priority {
-                HitResultPriority::BestCase => match inspect {
+                HitResultPriority::BestCase | HitResultPriority::Fastest => match inspect {
                     InspectManiaPerformance { n320: None, .. } => hitresults.n320 += left,
                     InspectManiaPerformance { n300: None, .. } => hitresults.n300 += left,
                     InspectManiaPerformance { n200: None, .. } => hitresults.n200 += left,

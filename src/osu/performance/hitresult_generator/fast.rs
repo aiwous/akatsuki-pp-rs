@@ -103,7 +103,7 @@ impl HitResultGenerator<Osu> for Fast {
             let left = total_hits - hitresults.total_hits();
 
             match inspect.hitresult_priority {
-                HitResultPriority::BestCase => match inspect {
+                HitResultPriority::BestCase | HitResultPriority::Fastest => match inspect {
                     InspectOsuPerformance { n300: None, .. } => hitresults.n300 += left,
                     InspectOsuPerformance { n100: None, .. } => hitresults.n100 += left,
                     _ => hitresults.n50 += left,

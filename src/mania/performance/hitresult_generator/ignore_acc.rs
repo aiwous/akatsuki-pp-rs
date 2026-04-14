@@ -20,7 +20,7 @@ impl HitResultGenerator<Mania> for IgnoreAccuracy {
         };
 
         let (n320, n300, n200, n100, n50) = match inspect.hitresult_priority {
-            HitResultPriority::BestCase => {
+            HitResultPriority::BestCase | HitResultPriority::Fastest => {
                 // First pass: assign specified values in priority order
                 let n320 = assign_specified(inspect.n320);
                 let n300 = assign_specified(inspect.n300);

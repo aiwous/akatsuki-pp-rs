@@ -8,7 +8,7 @@ use super::{
     DifficultyObject, OsuObject, Skill, SkillKind,
 };
 
-use crate::{Beatmap, GameMods};
+use crate::{model::beatmap::BeatmapAttributesBuilder, Beatmap, GameMods};
 
 use rosu_map::section::hit_objects::CurveBuffers;
 
@@ -40,18 +40,19 @@ pub fn stars(
     passed_objects: Option<u32>,
     clock_rate: Option<f64>,
 ) -> OsuDifficultyAttributes {
-    let mut builder = map.attributes().mods(mods.clone());
+    let mut builder = BeatmapAttributesBuilder::from(map);
+    builder.mods(mods.clone());
 
     if let Some(clock_rate) = clock_rate {
-        builder = builder.clock_rate(clock_rate);
+        builder.clock_rate(clock_rate);
     }
 
     let map_attributes = builder.build();
 
     let mut diff_attributes = OsuDifficultyAttributes {
-        ar: map_attributes.ar,
-        od: map_attributes.od,
-        cs: map_attributes.cs,
+        ar: f64::from(map_attributes.ar()),
+        od: f64::from(map_attributes.od()),
+        cs: f64::from(map_attributes.cs()),
         ..Default::default()
     };
 
@@ -61,8 +62,8 @@ pub fn stars(
         return diff_attributes;
     }
 
-    let section_len = SECTION_LEN * map_attributes.clock_rate as f32;
-    let radius = OBJECT_RADIUS * (1.0 - 0.7 * (map_attributes.cs as f32 - 5.0) / 5.0) / 2.0;
+    let section_len = SECTION_LEN * map_attributes.clock_rate() as f32;
+    let radius = OBJECT_RADIUS * (1.0 - 0.7 * (f64::from(map_attributes.cs()) as f32 - 5.0) / 5.0) / 2.0;
     let mut scaling_factor = NORMALIZED_RADIUS / radius;
 
     if radius < 30.0 {
@@ -116,7 +117,7 @@ pub fn stars(
         &prev,
         prev_vals,
         prev_prev,
-        map_attributes.clock_rate as f32,
+        map_attributes.clock_rate() as f32,
         scaling_factor,
     );
 
@@ -148,7 +149,7 @@ pub fn stars(
             &prev,
             prev_vals,
             prev_prev,
-            map_attributes.clock_rate as f32,
+            map_attributes.clock_rate() as f32,
             scaling_factor,
         );
 
@@ -192,8 +193,8 @@ pub fn stars(
     // Compute AR preempt values
     // map_attributes.hit_windows.ar IS the clock-rate-adjusted preempt.
     // Raw preempt = hit_windows.ar * clock_rate
-    let time_preempt_raw = map_attributes.hit_windows.ar as f32 * map_attributes.clock_rate as f32;
-    let preempt = map_attributes.hit_windows.ar as f32; // already clock-rate adjusted
+    let time_preempt_raw = map_attributes.hit_windows().ar.unwrap() as f32 * map_attributes.clock_rate() as f32;
+    let preempt = map_attributes.hit_windows().ar.unwrap() as f32; // already clock-rate adjusted
     let time_fade_in_raw = 400.0 * (time_preempt_raw / PREEMPT_MIN).min(1.0);
     let hd_fade_in_raw = time_preempt_raw * 0.4; // HD TimeFadeIn
 
@@ -202,7 +203,7 @@ pub fn stars(
         preempt,
         time_fade_in_raw,
         hd_fade_in_raw,
-        clock_rate: map_attributes.clock_rate as f32,
+        clock_rate: map_attributes.clock_rate() as f32,
         hidden: mods.hd(),
     };
 
@@ -216,7 +217,7 @@ pub fn stars(
     };
 
     let reading_difficulty_value =
-        reading_skill.difficulty_value(first_object_time, map_attributes.clock_rate as f32);
+        reading_skill.difficulty_value(first_object_time, map_attributes.clock_rate() as f32);
     let reading_strain = reading_difficulty_value.sqrt() * DIFFICULTY_MULTIPLIER;
     let reading_difficult_note_count =
         reading_skill.count_top_weighted_object_difficulties(reading_difficulty_value);

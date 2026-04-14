@@ -1,6 +1,6 @@
 use std::panic::{self, UnwindSafe};
 
-use rosu_pp::{
+use akatsuki_pp::{
     Beatmap, Difficulty,
     catch::{Catch, CatchDifficultyAttributes},
     mania::{Mania, ManiaDifficultyAttributes},
