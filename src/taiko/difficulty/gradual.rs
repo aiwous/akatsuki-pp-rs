@@ -3,17 +3,16 @@ use std::{cmp, mem, slice::Iter};
 use rosu_map::section::general::GameMode;
 
 use crate::{
-    any::difficulty::skills::StrainSkill,
-    model::{beatmap::HitWindows, hit_object::HitObject, mode::ConvertError},
-    taiko::convert,
-    util::sync::RefCount,
     Beatmap, Difficulty,
+    any::{CalculateError, difficulty::skills::StrainSkill},
+    model::{hit_object::HitObject, mode::ConvertError},
+    util::sync::RefCount,
 };
 
 use super::{
+    DifficultyValues, TaikoDifficultyAttributes,
     object::{TaikoDifficultyObject, TaikoDifficultyObjects},
     skills::TaikoSkills,
-    DifficultyValues, TaikoDifficultyAttributes,
 };
 
 /// Gradually calculate the difficulty attributes of an osu!taiko map.
@@ -28,8 +27,8 @@ use super::{
 /// # Example
 ///
 /// ```
-/// use akatsuki_pp::{Beatmap, Difficulty};
-/// use akatsuki_pp::taiko::{Taiko, TaikoGradualDifficulty};
+/// use rosu_pp::{Beatmap, Difficulty};
+/// use rosu_pp::taiko::{Taiko, TaikoGradualDifficulty};
 ///
 /// let map = Beatmap::from_path("./resources/1028484.osu").unwrap();
 ///
@@ -70,67 +69,80 @@ enum FirstTwoCombos {
 impl TaikoGradualDifficulty {
     /// Create a new difficulty attributes iterator for osu!taiko maps.
     pub fn new(difficulty: Difficulty, map: &Beatmap) -> Result<Self, ConvertError> {
-        let mut map = map.convert_ref(GameMode::Taiko, difficulty.get_mods())?;
+        let map = super::prepare_map(&difficulty, map)?;
 
-        if let Some(seed) = difficulty.get_mods().random_seed() {
-            convert::apply_random_to_beatmap(map.to_mut(), seed);
-        }
+        Ok(new(difficulty, &map))
+    }
 
-        let take = difficulty.get_passed_objects();
-        let clock_rate = difficulty.get_clock_rate();
+    /// Same as [`TaikoGradualDifficulty::new`] but verifies that the map is not
+    /// suspicious.
+    pub fn checked_new(difficulty: Difficulty, map: &Beatmap) -> Result<Self, CalculateError> {
+        let map = super::prepare_map(&difficulty, map)?;
+        map.check_suspicion()?;
 
-        let first_combos = match (
-            map.hit_objects.first().map(HitObject::is_circle),
-            map.hit_objects.get(1).map(HitObject::is_circle),
-        ) {
-            (None, _) | (Some(false), Some(false) | None) => FirstTwoCombos::None,
-            (Some(true), Some(false) | None) => FirstTwoCombos::OnlyFirst,
-            (Some(false), Some(true)) => FirstTwoCombos::OnlySecond,
-            (Some(true), Some(true)) => FirstTwoCombos::Both,
-        };
+        Ok(new(difficulty, &map))
+    }
+}
 
-        let HitWindows {
-            od_great,
-            od_ok,
-            od_meh: _,
-            ar: _,
-        } = map.attributes().difficulty(&difficulty).hit_windows();
+fn new(difficulty: Difficulty, map: &Beatmap) -> TaikoGradualDifficulty {
+    debug_assert_eq!(map.mode, GameMode::Taiko);
 
-        let mut n_diff_objects = 0;
-        let mut max_combo = 0;
+    let take = difficulty.get_passed_objects();
+    let clock_rate = difficulty.get_clock_rate();
 
-        let diff_objects = DifficultyValues::create_difficulty_objects(
-            &map,
-            take as u32,
-            clock_rate,
-            &mut max_combo,
-            &mut n_diff_objects,
-            difficulty.get_mods(),
-        );
+    let first_combos = match (
+        map.hit_objects.first().map(HitObject::is_circle),
+        map.hit_objects.get(1).map(HitObject::is_circle),
+    ) {
+        (None, _) | (Some(false), Some(false) | None) => FirstTwoCombos::None,
+        (Some(true), Some(false) | None) => FirstTwoCombos::OnlyFirst,
+        (Some(false), Some(true)) => FirstTwoCombos::OnlySecond,
+        (Some(true), Some(true)) => FirstTwoCombos::Both,
+    };
 
-        let skills = TaikoSkills::new(od_great, map.is_convert);
+    let hit_windows = map
+        .attributes()
+        .difficulty(&difficulty)
+        .build()
+        .hit_windows();
 
-        let attrs = TaikoDifficultyAttributes {
-            great_hit_window: od_great,
-            ok_hit_window: od_ok.unwrap_or(0.0),
-            is_convert: map.is_convert,
-            ..Default::default()
-        };
+    let great_hit_window = hit_windows.od_great.unwrap_or(0.0);
+    let ok_hit_window = hit_windows.od_ok.unwrap_or(0.0);
 
-        let total_hits = map.hit_objects.iter().filter(|h| h.is_circle()).count();
+    let mut n_diff_objects = 0;
+    let mut max_combo = 0;
 
-        let diff_objects_iter = extend_lifetime(diff_objects.iter());
+    let diff_objects = DifficultyValues::create_difficulty_objects(
+        map,
+        take as u32,
+        clock_rate,
+        &mut max_combo,
+        &mut n_diff_objects,
+        difficulty.get_mods(),
+    );
 
-        Ok(Self {
-            idx: 0,
-            difficulty,
-            diff_objects,
-            diff_objects_iter,
-            skills,
-            attrs,
-            total_hits,
-            first_combos,
-        })
+    let skills = TaikoSkills::new(great_hit_window, map.is_convert);
+
+    let attrs = TaikoDifficultyAttributes {
+        great_hit_window,
+        ok_hit_window,
+        is_convert: map.is_convert,
+        ..Default::default()
+    };
+
+    let total_hits = map.hit_objects.iter().filter(|h| h.is_circle()).count();
+
+    let diff_objects_iter = extend_lifetime(diff_objects.iter());
+
+    TaikoGradualDifficulty {
+        idx: 0,
+        difficulty,
+        diff_objects,
+        diff_objects_iter,
+        skills,
+        attrs,
+        total_hits,
+        first_combos,
     }
 }
 
@@ -269,8 +281,8 @@ impl ExactSizeIterator for TaikoGradualDifficulty {
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::{taiko::Taiko, Beatmap};
+pub(super) mod tests {
+    use crate::{Beatmap, taiko::Taiko, taiko::attributes::tests::assert_eq_attrs};
 
     use super::*;
 
@@ -305,12 +317,12 @@ mod tests {
 
             if i % 2 == 0 {
                 let next_gradual_2nd = gradual_2nd.nth(1).unwrap();
-                assert_eq!(next_gradual, next_gradual_2nd);
+                assert_eq_attrs(&next_gradual, &next_gradual_2nd);
             }
 
             if i % 3 == 0 {
                 let next_gradual_3rd = gradual_3rd.nth(2).unwrap();
-                assert_eq!(next_gradual, next_gradual_3rd);
+                assert_eq_attrs(&next_gradual, &next_gradual_3rd);
             }
 
             let expected = difficulty
@@ -319,7 +331,7 @@ mod tests {
                 .calculate_for_mode::<Taiko>(&map)
                 .unwrap();
 
-            assert_eq!(next_gradual, expected);
+            assert_eq_attrs(&next_gradual, &expected);
         }
     }
 }

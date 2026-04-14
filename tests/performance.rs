@@ -1,11 +1,11 @@
 use std::panic::{self, UnwindSafe};
 
-use akatsuki_pp::{
+use rosu_pp::{
+    Beatmap,
     catch::{CatchPerformance, CatchPerformanceAttributes},
     mania::{ManiaPerformance, ManiaPerformanceAttributes},
     osu::{OsuPerformance, OsuPerformanceAttributes},
     taiko::{TaikoPerformance, TaikoPerformanceAttributes},
-    Beatmap,
 };
 
 use self::common::*;
@@ -36,6 +36,10 @@ macro_rules! test_cases {
         pp_speed: $pp_speed:expr,
         effective_miss_count: $effective_miss_count:expr,
         speed_deviation: $speed_deviation:expr,
+        combo_based_estimated_miss_count: $combo_based_estimated_miss_count:expr,
+        score_based_estimated_miss_count: $score_based_estimated_miss_count:expr,
+        aim_estimated_slider_breaks: $aim_estimated_slider_breaks:expr,
+        speed_estimated_slider_breaks: $speed_estimated_slider_breaks:expr,
     }) => {
         (
             OsuPerformance::from(&$map).lazer(true),
@@ -47,6 +51,10 @@ macro_rules! test_cases {
                 pp_speed: $pp_speed,
                 effective_miss_count: $effective_miss_count,
                 speed_deviation: $speed_deviation,
+                combo_based_estimated_miss_count: $combo_based_estimated_miss_count,
+                score_based_estimated_miss_count: $score_based_estimated_miss_count,
+                aim_estimated_slider_breaks: $aim_estimated_slider_breaks,
+                speed_estimated_slider_breaks: $speed_estimated_slider_breaks,
                 ..Default::default()
             },
         )
@@ -56,7 +64,6 @@ macro_rules! test_cases {
         pp: $pp:expr,
         pp_acc: $pp_acc:expr,
         pp_difficulty: $pp_difficulty:expr,
-        effective_miss_count: $effective_miss_count:expr,
         estimated_unstable_rate: $estimated_unstable_rate:expr,
     }) => {
         (
@@ -65,7 +72,6 @@ macro_rules! test_cases {
                 pp: $pp,
                 pp_acc: $pp_acc,
                 pp_difficulty: $pp_difficulty,
-                effective_miss_count: $effective_miss_count,
                 estimated_unstable_rate: $estimated_unstable_rate,
                 ..Default::default()
             },
@@ -105,67 +111,95 @@ fn basic_osu() {
     test_cases! {
         Osu: OSU {
             NM => {
-                pp: 273.55482143018787,
-                pp_acc: 97.62287463107766,
-                pp_aim: 98.91907543994563,
+                pp: 287.9051448920619,
+                pp_acc: 98.99847982709288,
+                pp_aim: 113.66811014707582,
                 pp_flashlight: 0.0,
-                pp_speed: 65.89857918351103,
+                pp_speed: 65.7316947411581,
                 effective_miss_count: 0.0,
-                speed_deviation: Some(11.855079578025586),
+                speed_deviation: Some(11.559405011202584),
+                combo_based_estimated_miss_count: 0.0,
+                score_based_estimated_miss_count: None,
+                aim_estimated_slider_breaks: 0.0,
+                speed_estimated_slider_breaks: 0.0,
             };
             HD => {
-                pp: 300.22543969392876,
-                pp_acc: 105.43270460156388,
-                pp_aim: 109.6023348327671,
+                pp: 315.8674097332546,
+                pp_acc: 106.91835821326032,
+                pp_aim: 125.5489356876975,
                 pp_flashlight: 0.0,
-                pp_speed: 73.01562523256396,
+                pp_speed: 72.9912208672784,
                 effective_miss_count: 0.0,
-                speed_deviation: Some(11.855079578025586),
+                speed_deviation: Some(11.559405011202584),
+                combo_based_estimated_miss_count: 0.0,
+                score_based_estimated_miss_count: None,
+                aim_estimated_slider_breaks: 0.0,
+                speed_estimated_slider_breaks: 0.0,
             };
             EZ HD => {
-                pp: 186.89279040924507,
-                pp_acc: 16.6270597231239,
-                pp_aim: 96.66495037071935,
+                pp: 200.88128466771315,
+                pp_acc: 17.33989029835826,
+                pp_aim: 109.17177789930311,
                 pp_flashlight: 0.0,
-                pp_speed: 63.20254195234833,
+                pp_speed: 64.55964097206972,
                 effective_miss_count: 0.0,
-                speed_deviation: Some(23.1539101317497),
+                speed_deviation: Some(22.768253044002595),
+                combo_based_estimated_miss_count: 0.0,
+                score_based_estimated_miss_count: None,
+                aim_estimated_slider_breaks: 0.0,
+                speed_estimated_slider_breaks: 0.0,
             };
             HR => {
-                pp: 405.7923033508039,
+                pp: 422.8822464661912,
                 pp_acc: 161.55575439788055,
-                pp_aim: 145.16956208688748,
+                pp_aim: 167.50210608714042,
                 pp_flashlight: 0.0,
-                pp_speed: 81.7375074976892,
+                pp_speed: 78.89335639563441,
                 effective_miss_count: 0.0,
-                speed_deviation: Some(8.857953596258472),
+                speed_deviation: Some(8.598712200750178),
+                combo_based_estimated_miss_count: 0.0,
+                score_based_estimated_miss_count: None,
+                aim_estimated_slider_breaks: 0.0,
+                speed_estimated_slider_breaks: 0.0,
             };
             DT => {
-                pp: 741.3788121712137,
-                pp_acc: 184.09450675506795,
-                pp_aim: 301.88645138363296,
+                pp: 784.2400469306212,
+                pp_acc: 183.66566616694254,
+                pp_aim: 348.7917741691343,
                 pp_flashlight: 0.0,
-                pp_speed: 224.91817628556774,
+                pp_speed: 224.8868678368528,
                 effective_miss_count: 0.0,
-                speed_deviation: Some(7.873979522967204),
+                speed_deviation: Some(7.6754769185728815),
+                combo_based_estimated_miss_count: 0.0,
+                score_based_estimated_miss_count: None,
+                aim_estimated_slider_breaks: 0.0,
+                speed_estimated_slider_breaks: 0.0,
             };
             FL => {
-                pp: 403.31324405364177,
-                pp_acc: 99.57533212369923,
-                pp_aim: 98.91907543994563,
-                pp_flashlight: 132.28811994208644,
-                pp_speed: 65.89857918351103,
+                pp: 415.9768919360004,
+                pp_acc: 100.97844942363474,
+                pp_aim: 113.66811014707582,
+                pp_flashlight: 132.3188848707867,
+                pp_speed: 65.7316947411581,
                 effective_miss_count: 0.0,
-                speed_deviation: Some(11.855079578025586),
+                speed_deviation: Some(11.559405011202584),
+                combo_based_estimated_miss_count: 0.0,
+                score_based_estimated_miss_count: None,
+                aim_estimated_slider_breaks: 0.0,
+                speed_estimated_slider_breaks: 0.0,
             };
             HD FL => {
-                pp: 470.3193633451629,
-                pp_acc: 107.54135869359516,
-                pp_aim: 109.6023348327671,
-                pp_flashlight: 171.61406165164135,
-                pp_speed: 73.01562523256396,
+                pp: 483.7752666636294,
+                pp_acc: 109.05672537752552,
+                pp_aim: 125.5489356876975,
+                pp_flashlight: 171.65397211175005,
+                pp_speed: 72.9912208672784,
                 effective_miss_count: 0.0,
-                speed_deviation: Some(11.855079578025586),
+                speed_deviation: Some(11.559405011202584),
+                combo_based_estimated_miss_count: 0.0,
+                score_based_estimated_miss_count: None,
+                aim_estimated_slider_breaks: 0.0,
+                speed_estimated_slider_breaks: 0.0,
             };
         }
     };
@@ -176,32 +210,28 @@ fn basic_taiko() {
     test_cases! {
         Taiko: TAIKO {
             NM => {
-                pp: 104.65974235594882,
-                pp_acc: 67.01508452097738,
-                pp_difficulty: 30.951117266143964,
-                effective_miss_count: 0.0,
-                estimated_unstable_rate: Some(148.44150180469418),
+                pp: 130.3342753050141,
+                pp_acc: 96.78235028730231,
+                pp_difficulty: 33.551925017711795,
+                estimated_unstable_rate: Some(146.32383579722838),
             };
             HD => {
-                pp: 113.35231886537841,
-                pp_acc: 67.01508452097738,
-                pp_difficulty: 31.72489519779756,
-                effective_miss_count: 0.0,
-                estimated_unstable_rate: Some(148.44150180469418),
+                pp: 138.26399007691603,
+                pp_acc: 104.04102655884999,
+                pp_difficulty: 34.22296351806603,
+                estimated_unstable_rate: Some(146.32383579722838),
             };
             HR => {
-                pp: 125.39316057548226,
-                pp_acc: 83.3355298805701,
-                pp_difficulty: 33.77220597125385,
-                effective_miss_count: 0.0,
-                estimated_unstable_rate: Some(122.99438720960376),
+                pp: 166.77434181278937,
+                pp_acc: 130.20134262470424,
+                pp_difficulty: 36.57299918808513,
+                estimated_unstable_rate: Some(120.87621218031911),
             };
             DT => {
-                pp: 217.2255599983772,
-                pp_acc: 119.35453575917016,
-                pp_difficulty: 85.09547264616562,
-                effective_miss_count: 0.0,
-                estimated_unstable_rate: Some(98.96100120312946),
+                pp: 266.1232222806763,
+                pp_acc: 173.19552687459048,
+                pp_difficulty: 92.92769540608585,
+                estimated_unstable_rate: Some(97.54922386481893),
             };
         }
     };
@@ -213,32 +243,28 @@ fn convert_taiko() {
     test_cases! {
         Taiko: OSU {
             NM => {
-                pp: 321.96508788209525,
-                pp_acc: 150.50068595207387,
-                pp_difficulty: 152.95500113793892,
-                effective_miss_count: 0.0,
-                estimated_unstable_rate: Some(85.75868894575865),
+                pp: 388.8389762212271,
+                pp_acc: 220.27109512284244,
+                pp_difficulty: 168.56788109838465,
+                estimated_unstable_rate: Some(81.74165086164194),
             };
             HD => {
-                pp: 326.0279405978374,
-                pp_acc: 150.50068595207387,
-                pp_difficulty: 156.7788761663874,
-                effective_miss_count: 0.0,
-                estimated_unstable_rate: Some(85.75868894575865),
+                pp: 389.68181562671896,
+                pp_acc: 220.27109512284244,
+                pp_difficulty: 169.41072050387652,
+                estimated_unstable_rate: Some(81.74165086164194),
             };
             HR => {
-                pp: 400.1259115798042,
-                pp_acc: 187.46770845243455,
-                pp_difficulty: 189.65602547641478,
-                effective_miss_count: 0.0,
-                estimated_unstable_rate: Some(72.67685680089848),
+                pp: 466.289743228387,
+                pp_acc: 259.1975812188925,
+                pp_difficulty: 207.0921620094945,
+                estimated_unstable_rate: Some(70.8427640800897),
             };
             DT => {
-                pp: 688.6809319343615,
-                pp_acc: 274.8702821415836,
-                pp_difficulty: 373.46911205993484,
-                effective_miss_count: 0.0,
-                estimated_unstable_rate: Some(57.17245929717244),
+                pp: 805.083671145498,
+                pp_acc: 392.44103449845574,
+                pp_difficulty: 412.64263664704225,
+                estimated_unstable_rate: Some(54.494433907761305),
             };
         }
     }
@@ -311,6 +337,10 @@ impl AssertEq for OsuPerformanceAttributes {
             pp_speed,
             effective_miss_count,
             speed_deviation,
+            combo_based_estimated_miss_count,
+            score_based_estimated_miss_count,
+            aim_estimated_slider_breaks,
+            speed_estimated_slider_breaks,
         } = self;
 
         assert_eq_float(*pp, expected.pp);
@@ -320,6 +350,22 @@ impl AssertEq for OsuPerformanceAttributes {
         assert_eq_float(*pp_speed, expected.pp_speed);
         assert_eq_float(*effective_miss_count, expected.effective_miss_count);
         assert_eq_option(*speed_deviation, expected.speed_deviation);
+        assert_eq_float(
+            *combo_based_estimated_miss_count,
+            expected.combo_based_estimated_miss_count,
+        );
+        assert_eq_option(
+            *score_based_estimated_miss_count,
+            expected.score_based_estimated_miss_count,
+        );
+        assert_eq_float(
+            *aim_estimated_slider_breaks,
+            expected.aim_estimated_slider_breaks,
+        );
+        assert_eq_float(
+            *speed_estimated_slider_breaks,
+            expected.speed_estimated_slider_breaks,
+        );
     }
 }
 
@@ -330,14 +376,12 @@ impl AssertEq for TaikoPerformanceAttributes {
             pp,
             pp_acc,
             pp_difficulty,
-            effective_miss_count,
             estimated_unstable_rate,
         } = self;
 
         assert_eq_float(*pp, expected.pp);
         assert_eq_float(*pp_acc, expected.pp_acc);
         assert_eq_float(*pp_difficulty, expected.pp_difficulty);
-        assert_eq_float(*effective_miss_count, expected.effective_miss_count);
         assert_eq_option(*estimated_unstable_rate, expected.estimated_unstable_rate);
     }
 }

@@ -1,4 +1,4 @@
-use std::cmp;
+use std::{borrow::Cow, cmp};
 
 use rosu_map::{
     section::{
@@ -8,10 +8,12 @@ use rosu_map::{
 };
 
 use crate::{
+    Difficulty,
     model::{
         beatmap::Beatmap,
         control_point::{DifficultyPoint, EffectPoint, TimingPoint},
         hit_object::{HitObject, HitObjectKind, HoldNote, Slider, Spinner},
+        mode::ConvertError,
     },
     util::{
         float_ext::FloatExt, get_precision_adjusted_beat_len,
@@ -21,6 +23,19 @@ use crate::{
 
 const VELOCITY_MULTIPLIER: f32 = 1.4;
 const OSU_BASE_SCORING_DIST: f32 = 100.0;
+
+pub fn prepare_map<'map>(
+    difficulty: &Difficulty,
+    map: &'map Beatmap,
+) -> Result<Cow<'map, Beatmap>, ConvertError> {
+    let mut map = map.convert_ref(GameMode::Taiko, difficulty.get_mods())?;
+
+    if let Some(seed) = difficulty.get_mods().random_seed() {
+        apply_random_to_beatmap(map.to_mut(), seed);
+    }
+
+    Ok(map)
+}
 
 pub fn convert(map: &mut Beatmap) {
     let mut new_objects = Vec::new();
@@ -187,7 +202,7 @@ impl<'c> SliderParams<'c> {
     }
 }
 
-pub(super) fn apply_random_to_beatmap(map: &mut Beatmap, seed: i32) {
+fn apply_random_to_beatmap(map: &mut Beatmap, seed: i32) {
     let mut rng = CsharpRandom::new(seed);
 
     for (h, s) in map.hit_objects.iter().zip(map.hit_sounds.iter_mut()) {

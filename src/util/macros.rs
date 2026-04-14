@@ -27,11 +27,7 @@ macro_rules! define_skill {
         }
 
         $_new_vis:vis fn new( $( $arg_name:ident: $arg_type:ty ),* ) -> Self {
-            $( { $( $setup:tt )* } )?
-
-            Self {
-                $( $assign_name:ident: $assign_expr:expr, )*
-            }
+            $( $body:tt )*
         }
     ) => {
         define_skill! {
@@ -40,9 +36,64 @@ macro_rules! define_skill {
             fields { $( $field_name $field_type |, )* }
             struct { $( #[$meta] )* $vis $skill }
             new {
-                setup { $( $( $setup )* )? }
+                setup_body { $( $body )* }
+                setup {}
                 args { $( $arg_name $arg_type, )* }
-                assigns { $( $assign_name $assign_expr, )* }
+            }
+        }
+    };
+
+    // Processing `new` function: Found the final `Self` return value
+    (
+        @$trait:ident $objects:ty[$object:ty]
+        extend_fields $extend_fields:ident
+        fields { $( $fields:tt )* }
+        struct { $( $struct:tt )* }
+        new {
+            setup_body {
+                Self { $( $assign_name:ident: $assign_expr:expr, )* } // <-
+            }
+            setup { $( $setup:tt )* }
+            args { $( $args:tt )* }
+        }
+    ) => {
+        define_skill! {
+            @$trait $objects[$object]
+            extend_fields $trait
+            fields { $( $fields )* }
+            struct { $( $struct )* }
+            new {
+                setup { $( $setup )* }
+                args { $( $args )* }
+                assigns { $( $assign_name $assign_expr, )* } // <-
+            }
+        }
+    };
+
+    // Processing `new` function: Pop next statement from body and continue
+    (
+        @$trait:ident $objects:ty[$object:ty]
+        extend_fields $extend_fields:ident
+        fields { $( $fields:tt )* }
+        struct { $( $struct:tt )* }
+        new {
+            setup_body {
+                $stmt:stmt; // <-
+                $( $rest:tt )+
+            }
+            setup { $( $setup:tt )* }
+            args { $( $args:tt )* }
+        }
+    ) => {
+        define_skill! {
+            @$trait $objects[$object]
+            extend_fields $trait
+            fields { $( $fields )* }
+            struct { $( $struct )* }
+            new {
+                setup_body { $( $rest )* }   // <-
+                setup { $( $setup )* $stmt } // <-
+                args { $( $args )* }
             }
         }
     };
@@ -78,9 +129,7 @@ macro_rules! define_skill {
                 $( $fields )*
                 strain_skill_current_section_peak f64 = 0.0, // <-
                 strain_skill_current_section_end f64 = 0.0,  // <-
-                strain_skill_strain_peaks crate::util::strains_vec::StrainsVec
-                    = crate::util::strains_vec::StrainsVec::with_capacity(256), // <-
-                // TODO: use `StrainsVec`?
+                strain_skill_strain_peaks Vec<f64> = Vec::with_capacity(256), // <-
                 strain_skill_object_strains Vec<f64> = Vec::with_capacity(256), // <-
             }
             $( $rest )*
@@ -167,7 +216,7 @@ macro_rules! define_skill {
             $( $field_name:ident $field_type:ty, )*
         }
         new {
-            setup { $( $setup:tt )* }
+            setup { $( $setup:stmt )* }
             args { $( $arg_name:ident $arg_type:ty, )* }
             assigns { $( $assign_name:ident $( $assign_expr:expr )?, )* }
         }
@@ -178,7 +227,6 @@ macro_rules! define_skill {
         }
 
         impl $name {
-            #[allow(unused)]
             $vis fn new(
                 $( $arg_name: $arg_type, )*
             ) -> Self {
@@ -191,13 +239,12 @@ macro_rules! define_skill {
         }
 
         const _: () = {
-            #[allow(unused_imports)]
+            #[expect(unused_imports, reason = "fine for macros")]
             use crate::{
                 any::difficulty::{
                     object::{IDifficultyObject, IDifficultyObjects, HasStartTime},
                     skills::{StrainSkill, StrainDecaySkill},
                 },
-                util::strains_vec::StrainsVec,
             };
 
             define_skill!( @impl $trait $name $objects[$object] );
@@ -241,6 +288,10 @@ macro_rules! define_skill {
                 self.strain_skill_object_strains.push(strain);
             }
 
+            fn object_strains(&self) -> &[f64] {
+                &self.strain_skill_object_strains
+            }
+
             fn count_top_weighted_strains(&self, difficulty_value: f64) -> f64 {
                 crate::any::difficulty::skills::count_top_weighted_strains(
                     &self.strain_skill_object_strains,
@@ -262,14 +313,14 @@ macro_rules! define_skill {
                     = self.calculate_initial_strain(time, curr, objects);
             }
 
-            fn into_current_strain_peaks(self) -> StrainsVec {
+            fn into_current_strain_peaks(self) -> Vec<f64> {
                 Self::get_current_strain_peaks(
                     self.strain_skill_strain_peaks,
                     self.strain_skill_current_section_peak,
                 )
             }
 
-            fn difficulty_value(current_strain_peaks: StrainsVec) -> f64 {
+            fn difficulty_value(current_strain_peaks: Vec<f64>) -> f64 {
                 crate::any::difficulty::skills::difficulty_value(
                     current_strain_peaks,
                     Self::DECAY_WEIGHT,

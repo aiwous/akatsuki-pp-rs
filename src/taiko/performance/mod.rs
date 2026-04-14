@@ -4,31 +4,66 @@ use rosu_map::section::general::GameMode;
 
 use self::calculator::TaikoPerformanceCalculator;
 
+pub use self::inspect::InspectTaikoPerformance;
+
 use crate::{
-    any::{Difficulty, HitResultPriority, IntoModePerformance, IntoPerformance},
+    Performance,
+    any::{
+        CalculateError, Difficulty, HitResultGenerator, HitResultPriority, InspectablePerformance,
+        IntoModePerformance, IntoPerformance, hitresult_generator::Closest,
+    },
     model::{mode::ConvertError, mods::GameMods},
     osu::OsuPerformance,
+    taiko::score_state::TaikoHitResults,
     util::map_or_attrs::MapOrAttrs,
-    Performance,
 };
 
-use super::{attributes::TaikoPerformanceAttributes, score_state::TaikoScoreState, Taiko};
+use super::{Taiko, attributes::TaikoPerformanceAttributes, score_state::TaikoScoreState};
 
 mod calculator;
 pub mod gradual;
+mod hitresult_generator;
+mod inspect;
 
 /// Performance calculator on osu!taiko maps.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 #[must_use]
 pub struct TaikoPerformance<'map> {
     pub(crate) map_or_attrs: MapOrAttrs<'map, Taiko>,
     difficulty: Difficulty,
     combo: Option<u32>,
     acc: Option<f64>,
-    hitresult_priority: HitResultPriority,
     n300: Option<u32>,
     n100: Option<u32>,
     misses: Option<u32>,
+    hitresult_priority: HitResultPriority,
+    hitresult_generator: Option<fn(InspectTaikoPerformance<'_>) -> TaikoHitResults>,
+}
+
+// Manual implementation because of the `hitresult_generator` function pointer
+impl PartialEq for TaikoPerformance<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            map_or_attrs,
+            difficulty,
+            combo,
+            acc,
+            n300,
+            n100,
+            misses,
+            hitresult_priority,
+            hitresult_generator: _,
+        } = self;
+
+        map_or_attrs == &other.map_or_attrs
+            && difficulty == &other.difficulty
+            && combo == &other.combo
+            && acc == &other.acc
+            && n300 == &other.n300
+            && n100 == &other.n100
+            && misses == &other.misses
+            && hitresult_priority == &other.hitresult_priority
+    }
 }
 
 impl<'map> TaikoPerformance<'map> {
@@ -94,13 +129,26 @@ impl<'map> TaikoPerformance<'map> {
         self
     }
 
-    /// Specify how hitresults should be generated.
-    ///
-    /// Defauls to [`HitResultPriority::BestCase`].
+    /// Specify the priority of hitresults.
     pub const fn hitresult_priority(mut self, priority: HitResultPriority) -> Self {
         self.hitresult_priority = priority;
 
         self
+    }
+
+    /// Specify how hitresults should be generated.
+    pub fn hitresult_generator<H: HitResultGenerator<Taiko>>(self) -> TaikoPerformance<'map> {
+        TaikoPerformance {
+            map_or_attrs: self.map_or_attrs,
+            difficulty: self.difficulty,
+            acc: self.acc,
+            combo: self.combo,
+            n300: self.n300,
+            n100: self.n100,
+            misses: self.misses,
+            hitresult_priority: self.hitresult_priority,
+            hitresult_generator: Some(H::generate_hitresults),
+        }
     }
 
     /// Specify the amount of 300s of a play.
@@ -200,12 +248,18 @@ impl<'map> TaikoPerformance<'map> {
     pub const fn state(mut self, state: TaikoScoreState) -> Self {
         let TaikoScoreState {
             max_combo,
-            n300,
-            n100,
-            misses,
+            hitresults,
         } = state;
 
         self.combo = Some(max_combo);
+
+        self.hitresults(hitresults)
+    }
+
+    /// Provide parameters through [`TaikoHitResults`].
+    pub const fn hitresults(mut self, hitresults: TaikoHitResults) -> Self {
+        let TaikoHitResults { n300, n100, misses } = hitresults;
+
         self.n300 = Some(n300);
         self.n100 = Some(n100);
         self.misses = Some(misses);
@@ -213,117 +267,63 @@ impl<'map> TaikoPerformance<'map> {
         self
     }
 
-    /// Create the [`TaikoScoreState`] that will be used for performance calculation.
+    /// Create the [`TaikoScoreState`] that will be used for performance
+    /// calculation.
+    ///
+    /// If this [`TaikoPerformance`] contained a [`Beatmap`], it will be
+    /// replaced by [`TaikoDifficultyAttributes`].
+    ///
+    /// [`Beatmap`]: crate::Beatmap
+    /// [`TaikoDifficultyAttributes`]: crate::taiko::TaikoDifficultyAttributes
     pub fn generate_state(&mut self) -> Result<TaikoScoreState, ConvertError> {
-        let attrs = match self.map_or_attrs {
-            MapOrAttrs::Map(ref map) => {
-                let attrs = self.difficulty.calculate_for_mode::<Taiko>(map)?;
+        self.map_or_attrs.insert_attrs(&self.difficulty)?;
 
-                self.map_or_attrs.insert_attrs(attrs)
-            }
-            MapOrAttrs::Attrs(ref attrs) => attrs,
-        };
+        // SAFETY: We just calculated and inserted the attributes.
+        let state = unsafe { generate_state(self) };
 
-        let max_combo = attrs.max_combo();
+        Ok(state)
+    }
 
-        let total_result_count = cmp::min(self.difficulty.get_passed_objects() as u32, max_combo);
+    /// Same as [`TaikoPerformance::generate_state`] but verifies that the map
+    /// is not suspicious.
+    pub fn checked_generate_state(&mut self) -> Result<TaikoScoreState, CalculateError> {
+        self.map_or_attrs.checked_insert_attrs(&self.difficulty)?;
 
-        let priority = self.hitresult_priority;
+        // SAFETY: We just calculated and inserted the attributes.
+        let state = unsafe { generate_state(self) };
 
-        let misses = self.misses.map_or(0, |n| cmp::min(n, total_result_count));
-        let n_remaining = total_result_count - misses;
-
-        let mut n300 = self.n300.map_or(0, |n| cmp::min(n, n_remaining));
-        let mut n100 = self.n100.map_or(0, |n| cmp::min(n, n_remaining));
-
-        if let Some(acc) = self.acc {
-            match (self.n300, self.n100) {
-                (Some(_), Some(_)) => {
-                    let remaining = total_result_count.saturating_sub(n300 + n100 + misses);
-
-                    match priority {
-                        HitResultPriority::BestCase | HitResultPriority::Fastest => {
-                            n300 += remaining;
-                        }
-                        HitResultPriority::WorstCase => n100 += remaining,
-                    }
-                }
-                (Some(_), None) => n100 += total_result_count.saturating_sub(n300 + misses),
-                (None, Some(_)) => n300 += total_result_count.saturating_sub(n100 + misses),
-                (None, None) => {
-                    let target_total = acc * f64::from(2 * total_result_count);
-
-                    if let HitResultPriority::Fastest = priority {
-                        n300 = f64::round_ties_even(target_total) as u32 - n_remaining;
-                        n100 = total_result_count.saturating_sub(n300 + misses);
-                    } else {
-                        let mut best_dist = f64::MAX;
-
-                        let raw_n300 = target_total - f64::from(n_remaining);
-                        let min_n300 = cmp::min(n_remaining, raw_n300.floor() as u32);
-                        let max_n300 = cmp::min(n_remaining, raw_n300.ceil() as u32);
-
-                        for new300 in min_n300..=max_n300 {
-                            let new100 = n_remaining - new300;
-                            let dist = (acc - accuracy(new300, new100, misses)).abs();
-
-                            if dist < best_dist {
-                                best_dist = dist;
-                                n300 = new300;
-                                n100 = new100;
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            let remaining = total_result_count.saturating_sub(n300 + n100 + misses);
-
-            match priority {
-                HitResultPriority::BestCase | HitResultPriority::Fastest => {
-                    match (self.n300, self.n100) {
-                        (None, _) => n300 = remaining,
-                        (_, None) => n100 = remaining,
-                        _ => n300 += remaining,
-                    }
-                }
-                HitResultPriority::WorstCase => match (self.n100, self.n300) {
-                    (None, _) => n100 = remaining,
-                    (_, None) => n300 = remaining,
-                    _ => n100 += remaining,
-                },
-            }
-        }
-
-        let max_possible_combo = max_combo.saturating_sub(misses);
-
-        let max_combo = self.combo.map_or(max_possible_combo, |combo| {
-            cmp::min(combo, max_possible_combo)
-        });
-
-        self.combo = Some(max_combo);
-        self.n300 = Some(n300);
-        self.n100 = Some(n100);
-        self.misses = Some(misses);
-
-        Ok(TaikoScoreState {
-            max_combo,
-            n300,
-            n100,
-            misses,
-        })
+        Ok(state)
     }
 
     /// Calculate all performance related values, including pp and stars.
     pub fn calculate(mut self) -> Result<TaikoPerformanceAttributes, ConvertError> {
         let state = self.generate_state()?;
 
-        let attrs = match self.map_or_attrs {
-            MapOrAttrs::Attrs(attrs) => attrs,
-            MapOrAttrs::Map(ref map) => self.difficulty.calculate_for_mode::<Taiko>(map)?,
-        };
+        // SAFETY: Attributes are calculated in `generate_state`.
+        let attrs = unsafe { self.map_or_attrs.into_attrs() };
 
-        Ok(TaikoPerformanceCalculator::new(attrs, self.difficulty.get_mods(), state).calculate())
+        let is_classic = !self.difficulty.get_lazer() || self.difficulty.get_mods().cl();
+
+        let calculator =
+            TaikoPerformanceCalculator::new(attrs, self.difficulty.get_mods(), state, is_classic);
+
+        Ok(calculator.calculate())
+    }
+
+    /// Same as [`TaikoPerformance::calculate`] but verifies that the map was
+    /// not suspicious.
+    pub fn checked_calculate(mut self) -> Result<TaikoPerformanceAttributes, CalculateError> {
+        let state = self.checked_generate_state()?;
+
+        // SAFETY: Attributes are calculated in `checked_generate_state`.
+        let attrs = unsafe { self.map_or_attrs.into_attrs() };
+
+        let is_classic = !self.difficulty.get_lazer() || self.difficulty.get_mods().cl();
+
+        let calculator =
+            TaikoPerformanceCalculator::new(attrs, self.difficulty.get_mods(), state, is_classic);
+
+        Ok(calculator.calculate())
     }
 
     pub(crate) const fn from_map_or_attrs(map_or_attrs: MapOrAttrs<'map, Taiko>) -> Self {
@@ -336,6 +336,7 @@ impl<'map> TaikoPerformance<'map> {
             n300: None,
             n100: None,
             hitresult_priority: HitResultPriority::DEFAULT,
+            hitresult_generator: None,
         }
     }
 }
@@ -373,6 +374,8 @@ impl<'map> TryFrom<OsuPerformance<'map>> for TaikoPerformance<'map> {
             n50: _,
             misses,
             hitresult_priority,
+            hitresult_generator: _,
+            legacy_total_score: _,
         } = osu;
 
         Ok(Self {
@@ -380,10 +383,11 @@ impl<'map> TryFrom<OsuPerformance<'map>> for TaikoPerformance<'map> {
             difficulty,
             combo,
             acc,
-            hitresult_priority,
             n300,
             n100,
             misses,
+            hitresult_priority,
+            hitresult_generator: None,
         })
     }
 }
@@ -394,29 +398,55 @@ impl<'map, T: IntoModePerformance<'map, Taiko>> From<T> for TaikoPerformance<'ma
     }
 }
 
-fn accuracy(n300: u32, n100: u32, misses: u32) -> f64 {
-    if n300 + n100 + misses == 0 {
-        return 0.0;
+/// # Safety
+/// Caller must ensure that the internal [`MapOrAttrs`] contains attributes.
+unsafe fn generate_state(perf: &mut TaikoPerformance) -> TaikoScoreState {
+    // SAFETY: Ensured by caller
+    let attrs = unsafe { perf.map_or_attrs.get_attrs() };
+
+    let inspect = Taiko::inspect_performance(perf, attrs);
+
+    let max_combo = inspect.max_combo();
+    let misses = inspect.misses();
+
+    let hitresults = match perf.hitresult_generator {
+        Some(generator) => generator(inspect),
+        // Closest is still pretty quick for taiko so it should be fine
+        // to default to it rather than Fast
+        None => <Closest as HitResultGenerator<Taiko>>::generate_hitresults(inspect),
+    };
+
+    let max_possible_combo = max_combo.saturating_sub(misses);
+
+    let max_combo = perf.combo.map_or(max_possible_combo, |combo| {
+        cmp::min(combo, max_possible_combo)
+    });
+
+    perf.combo = Some(max_combo);
+
+    let TaikoHitResults { n300, n100, misses } = hitresults;
+
+    perf.n300 = Some(n300);
+    perf.n100 = Some(n100);
+    perf.misses = Some(misses);
+
+    TaikoScoreState {
+        max_combo,
+        hitresults,
     }
-
-    let numerator = 2 * n300 + n100;
-    let denominator = 2 * (n300 + n100 + misses);
-
-    f64::from(numerator) / f64::from(denominator)
 }
 
 #[cfg(test)]
 mod test {
     use std::sync::OnceLock;
 
-    use proptest::prelude::*;
     use rosu_map::section::general::GameMode;
 
     use crate::{
+        Beatmap,
         any::{DifficultyAttributes, PerformanceAttributes},
         osu::{OsuDifficultyAttributes, OsuPerformanceAttributes},
         taiko::TaikoDifficultyAttributes,
-        Beatmap,
     };
 
     use super::*;
@@ -442,117 +472,6 @@ mod test {
             .to_owned()
     }
 
-    /// Checks all remaining hitresult combinations w.r.t. the given parameters
-    /// and returns the [`TaikoScoreState`] that matches `acc` the best.
-    ///
-    /// Very slow but accurate.
-    fn brute_force_best(
-        acc: f64,
-        n300: Option<u32>,
-        n100: Option<u32>,
-        misses: u32,
-        best_case: bool,
-    ) -> TaikoScoreState {
-        let misses = cmp::min(misses, MAX_COMBO);
-
-        let mut best_state = TaikoScoreState {
-            misses,
-            ..Default::default()
-        };
-
-        let mut best_dist = f64::INFINITY;
-
-        let n_objects = MAX_COMBO;
-        let n_remaining = n_objects - misses;
-
-        let (min_n300, max_n300) = match (n300, n100) {
-            (Some(n300), _) => (cmp::min(n_remaining, n300), cmp::min(n_remaining, n300)),
-            (None, Some(n100)) => (
-                n_remaining.saturating_sub(n100),
-                n_remaining.saturating_sub(n100),
-            ),
-            (None, None) => (0, n_remaining),
-        };
-
-        for new300 in min_n300..=max_n300 {
-            let new100 = match n100 {
-                Some(n100) => cmp::min(n_remaining, n100),
-                None => n_remaining - new300,
-            };
-
-            let curr_acc = accuracy(new300, new100, misses);
-            let curr_dist = (acc - curr_acc).abs();
-
-            if curr_dist < best_dist {
-                best_dist = curr_dist;
-                best_state.n300 = new300;
-                best_state.n100 = new100;
-            }
-        }
-
-        if best_state.n300 + best_state.n100 < n_remaining {
-            let remaining = n_remaining - (best_state.n300 + best_state.n100);
-
-            if best_case {
-                best_state.n300 += remaining;
-            } else {
-                best_state.n100 += remaining;
-            }
-        }
-
-        best_state
-    }
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(1000))]
-
-        #[test]
-        fn hitresults(
-            acc in 0.0..=1.0,
-            n300 in prop::option::weighted(0.10, 0_u32..=MAX_COMBO + 10),
-            n100 in prop::option::weighted(0.10, 0_u32..=MAX_COMBO + 10),
-            n_misses in prop::option::weighted(0.15, 0_u32..=MAX_COMBO + 10),
-            best_case in prop::bool::ANY,
-        ) {
-            let priority = if best_case {
-                HitResultPriority::BestCase
-            } else {
-                HitResultPriority::WorstCase
-            };
-
-            let mut state = TaikoPerformance::from(attrs())
-                .accuracy(acc * 100.0)
-                .hitresult_priority(priority);
-
-            if let Some(n300) = n300 {
-                state = state.n300(n300);
-            }
-
-            if let Some(n100) = n100 {
-                state = state.n100(n100);
-            }
-
-            if let Some(misses) = n_misses {
-                state = state.misses(misses);
-            }
-
-            let first = state.generate_state().unwrap();
-            let state = state.generate_state().unwrap();
-            assert_eq!(first, state);
-
-            let mut expected = brute_force_best(
-                acc,
-                n300,
-                n100,
-                n_misses.unwrap_or(0),
-                best_case,
-            );
-            expected.max_combo = MAX_COMBO.saturating_sub(n_misses.unwrap_or(0));
-
-            assert_eq!(state, expected);
-        }
-    }
-
     #[test]
     fn hitresults_n300_misses_best() {
         let state = TaikoPerformance::from(attrs())
@@ -563,14 +482,13 @@ mod test {
             .generate_state()
             .unwrap();
 
-        let expected = TaikoScoreState {
-            max_combo: 100,
+        let expected = TaikoHitResults {
             n300: 150,
             n100: 137,
             misses: 2,
         };
 
-        assert_eq!(state, expected);
+        assert_eq!(state.hitresults, expected);
     }
 
     #[test]
@@ -582,14 +500,13 @@ mod test {
             .generate_state()
             .unwrap();
 
-        let expected = TaikoScoreState {
-            max_combo: 100,
+        let expected = TaikoHitResults {
             n300: 287,
             n100: 0,
             misses: 2,
         };
 
-        assert_eq!(state, expected);
+        assert_eq!(state.hitresults, expected);
     }
 
     #[test]
@@ -622,19 +539,24 @@ mod test {
         let _ = TaikoDifficultyAttributes::default().performance();
         let _ = TaikoPerformanceAttributes::default().performance();
 
-        assert!(map
-            .convert_mut(GameMode::Osu, &GameMods::default())
-            .is_err());
+        assert!(
+            map.convert_mut(GameMode::Osu, &GameMods::default())
+                .is_err()
+        );
 
         assert!(TaikoPerformance::try_new(OsuDifficultyAttributes::default()).is_none());
         assert!(TaikoPerformance::try_new(OsuPerformanceAttributes::default()).is_none());
-        assert!(TaikoPerformance::try_new(DifficultyAttributes::Osu(
-            OsuDifficultyAttributes::default()
-        ))
-        .is_none());
-        assert!(TaikoPerformance::try_new(PerformanceAttributes::Osu(
-            OsuPerformanceAttributes::default()
-        ))
-        .is_none());
+        assert!(
+            TaikoPerformance::try_new(
+                DifficultyAttributes::Osu(OsuDifficultyAttributes::default())
+            )
+            .is_none()
+        );
+        assert!(
+            TaikoPerformance::try_new(PerformanceAttributes::Osu(
+                OsuPerformanceAttributes::default()
+            ))
+            .is_none()
+        );
     }
 }

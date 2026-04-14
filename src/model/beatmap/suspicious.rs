@@ -17,7 +17,7 @@ use super::Beatmap;
 ///
 /// [`Beatmap::check_suspicion`]: crate::model::beatmap::Beatmap::check_suspicion
 /// [`Beatmap`]: crate::model::beatmap::Beatmap
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 #[non_exhaustive]
 pub enum TooSuspicious {
     /// Notes are too dense time-wise.
@@ -55,7 +55,8 @@ impl TooSuspicious {
         const fn too_many_objects(map: &Beatmap) -> bool {
             const THRESHOLD: usize = 500_000;
             /// Taiko calculation is especially expensive for high object counts
-            const THRESHOLD_TAIKO: usize = 20_000;
+            // Note that the ranked map /b/3824509 has 28866 objects.
+            const THRESHOLD_TAIKO: usize = 30_000;
 
             match map.mode {
                 GameMode::Taiko => map.hit_objects.len() > THRESHOLD_TAIKO,

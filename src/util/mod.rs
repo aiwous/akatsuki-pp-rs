@@ -1,14 +1,13 @@
 pub mod difficulty;
 pub mod float_ext;
 pub mod hint;
-pub mod interval_grouping;
 pub mod limited_queue;
 pub mod map_or_attrs;
 pub mod random;
+pub mod ruleset_ext;
 pub mod sort;
-pub mod special_functions;
-pub mod strains_vec;
 pub mod sync;
+pub mod traits;
 
 #[macro_use]
 mod macros;

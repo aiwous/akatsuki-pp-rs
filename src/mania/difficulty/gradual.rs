@@ -3,15 +3,16 @@ use std::cmp;
 use rosu_map::section::general::GameMode;
 
 use crate::{
-    any::difficulty::skills::StrainSkill,
-    mania::{convert, object::ObjectParams},
-    model::{hit_object::HitObject, mode::ConvertError},
     Beatmap, Difficulty,
+    any::{CalculateError, difficulty::skills::StrainSkill},
+    mania::object::ObjectParams,
+    model::{hit_object::HitObject, mode::ConvertError},
+    util::sync::RefCount,
 };
 
 use super::{
-    object::ManiaDifficultyObject, skills::strain::Strain, DifficultyValues,
-    ManiaDifficultyAttributes, ManiaObject, DIFFICULTY_MULTIPLIER,
+    DIFFICULTY_MULTIPLIER, DifficultyValues, ManiaDifficultyAttributes, ManiaObject,
+    object::ManiaDifficultyObject, skills::strain::Strain,
 };
 
 /// Gradually calculate the difficulty attributes of an osu!mania map.
@@ -26,8 +27,8 @@ use super::{
 /// # Example
 ///
 /// ```
-/// use akatsuki_pp::{Beatmap, Difficulty};
-/// use akatsuki_pp::mania::ManiaGradualDifficulty;
+/// use rosu_pp::{Beatmap, Difficulty};
+/// use rosu_pp::mania::ManiaGradualDifficulty;
 ///
 /// let map = Beatmap::from_path("./resources/1638954.osu").unwrap();
 ///
@@ -52,7 +53,7 @@ pub struct ManiaGradualDifficulty {
     objects_is_circle: Box<[bool]>,
     is_convert: bool,
     strain: Strain,
-    diff_objects: Box<[ManiaDifficultyObject]>,
+    diff_objects: Box<[RefCount<ManiaDifficultyObject>]>,
     note_state: NoteState,
 }
 
@@ -65,60 +66,66 @@ struct NoteState {
 impl ManiaGradualDifficulty {
     /// Create a new difficulty attributes iterator for osu!mania maps.
     pub fn new(difficulty: Difficulty, map: &Beatmap) -> Result<Self, ConvertError> {
-        let mut map = map.convert_ref(GameMode::Mania, difficulty.get_mods())?;
+        let map = super::prepare_map(&difficulty, map)?;
 
-        if difficulty.get_mods().ho() {
-            convert::apply_hold_off_to_beatmap(map.to_mut());
-        }
+        Ok(new(difficulty, &map))
+    }
 
-        if difficulty.get_mods().invert() {
-            convert::apply_invert_to_beatmap(map.to_mut());
-        }
+    /// Same as [`ManiaGradualDifficulty::new`] but verifies that the map is not
+    /// suspicious.
+    pub fn checked_new(difficulty: Difficulty, map: &Beatmap) -> Result<Self, CalculateError> {
+        let map = super::prepare_map(&difficulty, map)?;
+        map.check_suspicion()?;
 
-        if let Some(seed) = difficulty.get_mods().random_seed() {
-            convert::apply_random_to_beatmap(map.to_mut(), seed);
-        }
+        Ok(new(difficulty, &map))
+    }
+}
 
-        let take = difficulty.get_passed_objects();
-        let total_columns = map.cs.round_ties_even().max(1.0);
-        let clock_rate = difficulty.get_clock_rate();
-        let mut params = ObjectParams::new(&map);
+fn new(difficulty: Difficulty, map: &Beatmap) -> ManiaGradualDifficulty {
+    debug_assert_eq!(map.mode, GameMode::Mania);
 
-        let mania_objects = map
-            .hit_objects
-            .iter()
-            .map(|h| ManiaObject::new(h, total_columns, &mut params))
-            .take(take);
+    let take = difficulty.get_passed_objects();
+    let total_columns = map.cs.round_ties_even().max(1.0);
+    let clock_rate = difficulty.get_clock_rate();
+    let mut params = ObjectParams::new(map);
 
-        let diff_objects = DifficultyValues::create_difficulty_objects(clock_rate, mania_objects);
+    let mania_objects = map
+        .hit_objects
+        .iter()
+        .map(|h| ManiaObject::new(h, total_columns, &mut params))
+        .take(take);
 
-        let strain = Strain::new(total_columns as usize);
+    let diff_objects = DifficultyValues::create_difficulty_objects(
+        clock_rate,
+        total_columns as usize,
+        mania_objects,
+    );
 
-        let mut note_state = NoteState::default();
+    let strain = Strain::new(total_columns as usize);
 
-        let objects_is_circle: Box<[_]> =
-            map.hit_objects.iter().map(HitObject::is_circle).collect();
+    let mut note_state = NoteState::default();
 
-        if let Some(h) = map.hit_objects.first() {
-            let hit_object = ManiaObject::new(h, total_columns, &mut params);
+    let objects_is_circle: Box<[_]> = map.hit_objects.iter().map(HitObject::is_circle).collect();
 
-            increment_combo_raw(
-                objects_is_circle[0],
-                hit_object.start_time,
-                hit_object.end_time,
-                &mut note_state,
-            );
-        }
+    if let Some(h) = map.hit_objects.first() {
+        let hit_object = ManiaObject::new(h, total_columns, &mut params);
 
-        Ok(Self {
-            idx: 0,
-            difficulty,
-            objects_is_circle,
-            is_convert: map.is_convert,
-            strain,
-            diff_objects,
-            note_state,
-        })
+        increment_combo_raw(
+            objects_is_circle[0],
+            hit_object.start_time,
+            hit_object.end_time,
+            &mut note_state,
+        );
+    }
+
+    ManiaGradualDifficulty {
+        idx: 0,
+        difficulty,
+        objects_is_circle,
+        is_convert: map.is_convert,
+        strain,
+        diff_objects,
+        note_state,
     }
 }
 
@@ -132,7 +139,7 @@ impl Iterator for ManiaGradualDifficulty {
         // yet and just skip processing.
         if self.idx > 0 {
             let curr = self.diff_objects.get(self.idx - 1)?;
-            self.strain.process(curr, &self.diff_objects);
+            self.strain.process(&curr.get(), &self.diff_objects);
 
             let is_circle = self.objects_is_circle[self.idx];
             increment_combo(
@@ -181,7 +188,7 @@ impl Iterator for ManiaGradualDifficulty {
 
         for (curr, is_circle) in skip_iter.take(take) {
             increment_combo(*is_circle, curr, &mut self.note_state, clock_rate);
-            self.strain.process(curr, &self.diff_objects);
+            self.strain.process(&curr.get(), &self.diff_objects);
             self.idx += 1;
         }
 
@@ -197,14 +204,16 @@ impl ExactSizeIterator for ManiaGradualDifficulty {
 
 fn increment_combo(
     is_circle: bool,
-    diff_obj: &ManiaDifficultyObject,
+    diff_obj: &RefCount<ManiaDifficultyObject>,
     state: &mut NoteState,
     clock_rate: f64,
 ) {
+    let h = diff_obj.get();
+
     increment_combo_raw(
         is_circle,
-        diff_obj.start_time * clock_rate,
-        diff_obj.end_time * clock_rate,
+        h.start_time * clock_rate,
+        h.end_time * clock_rate,
         state,
     );
 }
@@ -220,7 +229,7 @@ fn increment_combo_raw(is_circle: bool, start_time: f64, end_time: f64, state: &
 
 #[cfg(test)]
 mod tests {
-    use crate::{mania::Mania, Beatmap};
+    use crate::{Beatmap, mania::Mania};
 
     use super::*;
 

@@ -1,13 +1,9 @@
-use crate::{
-    any::difficulty::skills::StrainSkill,
-    model::{beatmap::BeatmapAttributes, mods::GameMods},
-    osu::object::OsuObject,
-};
+use crate::{any::difficulty::skills::StrainSkill, model::mods::GameMods, osu::object::OsuObject};
 
 use self::{aim::Aim, flashlight::Flashlight, speed::Speed};
 
 use super::{
-    object::OsuDifficultyObject, scaling_factor::ScalingFactor, HD_FADE_IN_DURATION_MULTIPLIER,
+    HD_FADE_IN_DURATION_MULTIPLIER, object::OsuDifficultyObject, scaling_factor::ScalingFactor,
 };
 
 pub mod aim;
@@ -26,10 +22,10 @@ impl OsuSkills {
     pub fn new(
         mods: &GameMods,
         scaling_factor: &ScalingFactor,
-        map_attrs: &BeatmapAttributes,
+        great_hit_window: f64,
         time_preempt: f64,
     ) -> Self {
-        let hit_window = 2.0 * map_attrs.hit_windows.od_great;
+        let hit_window = 2.0 * great_hit_window;
 
         // * Preempt time can go below 450ms. Normally, this is achieved via the DT mod
         // * which uniformly speeds up all animations game wide regardless of AR.

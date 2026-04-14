@@ -1,4 +1,4 @@
-use crate::{model::beatmap::BeatmapAttributesBuilder, osu::performance::OsuPerformance};
+use crate::{model::beatmap::BeatmapAttributesExt, osu::performance::OsuPerformance};
 
 /// The result of a difficulty calculation on an osu!standard map.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -13,12 +13,22 @@ pub struct OsuDifficultyAttributes {
     pub flashlight: f64,
     /// The ratio of the aim strain with and without considering sliders
     pub slider_factor: f64,
+    /// Describes how much of aim's difficult strain count is contributed to by sliders
+    pub aim_top_weighted_slider_factor: f64,
+    /// Describes how much of speed's difficult strain count is contributed to by sliders
+    pub speed_top_weighted_slider_factor: f64,
     /// The number of clickable objects weighted by difficulty.
     pub speed_note_count: f64,
     /// Weighted sum of aim strains.
     pub aim_difficult_strain_count: f64,
     /// Weighted sum of speed strains.
     pub speed_difficult_strain_count: f64,
+    /// The amount of nested score per object.
+    pub nested_score_per_object: f64,
+    /// The legacy score base multiplier.
+    pub legacy_score_base_multiplier: f64,
+    /// The maximum legacy combo score.
+    pub maximum_legacy_combo_score: f64,
     /// The approach rate.
     pub ar: f64,
     /// The great hit window.
@@ -63,7 +73,7 @@ impl OsuDifficultyAttributes {
 
     /// The overall difficulty
     pub const fn od(&self) -> f64 {
-        BeatmapAttributesBuilder::osu_great_hit_window_to_od(self.great_hit_window)
+        BeatmapAttributesExt::osu_great_hit_window_to_od(self.great_hit_window)
     }
 
     /// Returns a builder for performance calculation.
@@ -91,6 +101,10 @@ pub struct OsuPerformanceAttributes {
     pub effective_miss_count: f64,
     /// Approximated unstable-rate
     pub speed_deviation: Option<f64>,
+    pub combo_based_estimated_miss_count: f64,
+    pub score_based_estimated_miss_count: Option<f64>,
+    pub aim_estimated_slider_breaks: f64,
+    pub speed_estimated_slider_breaks: f64,
 }
 
 impl OsuPerformanceAttributes {
@@ -124,3 +138,4 @@ impl From<OsuPerformanceAttributes> for OsuDifficultyAttributes {
         attributes.difficulty
     }
 }
+

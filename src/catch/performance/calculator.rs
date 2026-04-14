@@ -1,6 +1,6 @@
 use crate::{
-    catch::{CatchDifficultyAttributes, CatchPerformanceAttributes, CatchScoreState},
     GameMods,
+    catch::{CatchDifficultyAttributes, CatchPerformanceAttributes, CatchScoreState},
 };
 
 pub(super) struct CatchPerformanceCalculator<'mods> {
@@ -21,9 +21,9 @@ impl<'a> CatchPerformanceCalculator<'a> {
 
 impl CatchPerformanceCalculator<'_> {
     pub fn calculate(self) -> CatchPerformanceAttributes {
-        let attributes = &self.attrs;
-        let stars = attributes.stars;
-        let max_combo = attributes.max_combo();
+        let attrs = &self.attrs;
+        let stars = attrs.stars;
+        let max_combo = attrs.max_combo();
 
         // Relying heavily on aim
         let mut pp = (5.0 * (stars / 0.0049).max(1.0) - 4.0).powf(2.0) / 100_000.0;
@@ -44,16 +44,21 @@ impl CatchPerformanceCalculator<'_> {
         pp *= len_bonus;
 
         // Penalize misses exponentially
-        pp *= 0.97_f64.powf(f64::from(self.state.misses));
+        pp *= 0.97_f64.powf(f64::from(self.state.hitresults.misses));
 
         // Combo scaling
         if self.state.max_combo > 0 {
-            pp *= (f64::from(self.state.max_combo).powf(0.8) / f64::from(max_combo).powf(0.8))
+            pp *= (f64::from(self.state.max_combo).powf(0.35) / f64::from(max_combo).powf(0.35))
                 .min(1.0);
         }
 
         // AR scaling
-        let ar = attributes.ar;
+        let ar = if attrs.preempt > 1200.0 {
+            -(attrs.preempt - 1800.0) / 120.0
+        } else {
+            -(attrs.preempt - 1200.0) / 150.0 + 5.0
+        };
+
         let mut ar_factor = 1.0;
         if ar > 9.0 {
             ar_factor += 0.1 * (ar - 9.0) + f64::from(u8::from(ar > 10.0)) * 0.1 * (ar - 10.0);
@@ -77,11 +82,11 @@ impl CatchPerformanceCalculator<'_> {
         }
 
         // Accuracy scaling
-        pp *= self.state.accuracy().powf(5.5);
+        pp *= self.state.hitresults.accuracy().powf(5.5);
 
         // NF penalty
         if self.mods.nf() {
-            pp *= (1.0 - 0.02 * f64::from(self.state.misses)).max(0.9);
+            pp *= (1.0 - 0.02 * f64::from(self.state.hitresults.misses)).max(0.9);
         }
 
         CatchPerformanceAttributes {
@@ -91,6 +96,6 @@ impl CatchPerformanceCalculator<'_> {
     }
 
     const fn combo_hits(&self) -> u32 {
-        self.state.fruits + self.state.droplets + self.state.misses
+        self.state.hitresults.fruits + self.state.hitresults.droplets + self.state.hitresults.misses
     }
 }

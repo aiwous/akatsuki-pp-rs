@@ -3,29 +3,36 @@ use std::{borrow::Cow, cmp};
 use rosu_map::section::general::GameMode;
 
 use self::calculator::OsuPerformanceCalculator;
-pub use self::calculator::PERFORMANCE_BASE_MULTIPLIER;
+
+pub use self::{calculator::PERFORMANCE_BASE_MULTIPLIER, inspect::InspectOsuPerformance};
 
 use crate::{
-    any::{Difficulty, HitResultPriority, IntoModePerformance, IntoPerformance, Performance},
+    Beatmap,
+    any::{
+        CalculateError, Difficulty, HitResultGenerator, HitResultPriority, InspectablePerformance,
+        IntoModePerformance, IntoPerformance, Performance, hitresult_generator::Fast,
+    },
     catch::CatchPerformance,
     mania::ManiaPerformance,
     model::{mode::ConvertError, mods::GameMods},
+    osu::OsuHitResults,
     taiko::TaikoPerformance,
     util::map_or_attrs::MapOrAttrs,
-    Beatmap,
 };
 
 use super::{
-    attributes::{OsuDifficultyAttributes, OsuPerformanceAttributes},
-    score_state::{OsuScoreOrigin, OsuScoreState},
     Osu,
+    attributes::OsuPerformanceAttributes,
+    score_state::{OsuScoreOrigin, OsuScoreState},
 };
 
 mod calculator;
 pub mod gradual;
+mod hitresult_generator;
+mod inspect;
 
 /// Performance calculator on osu!standard maps.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 #[must_use]
 pub struct OsuPerformance<'map> {
     pub(crate) map_or_attrs: MapOrAttrs<'map, Osu>,
@@ -39,7 +46,45 @@ pub struct OsuPerformance<'map> {
     pub(crate) n100: Option<u32>,
     pub(crate) n50: Option<u32>,
     pub(crate) misses: Option<u32>,
+    pub(crate) legacy_total_score: Option<u32>,
     pub(crate) hitresult_priority: HitResultPriority,
+    pub(crate) hitresult_generator: Option<fn(InspectOsuPerformance<'_>) -> OsuHitResults>,
+}
+
+// Manual implementation because of the `hitresult_generator` function pointer
+impl PartialEq for OsuPerformance<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            map_or_attrs,
+            difficulty,
+            acc,
+            combo,
+            large_tick_hits,
+            small_tick_hits,
+            slider_end_hits,
+            n300,
+            n100,
+            n50,
+            misses,
+            hitresult_priority,
+            hitresult_generator: _,
+            legacy_total_score,
+        } = self;
+
+        map_or_attrs == &other.map_or_attrs
+            && difficulty == &other.difficulty
+            && acc == &other.acc
+            && combo == &other.combo
+            && large_tick_hits == &other.large_tick_hits
+            && small_tick_hits == &other.small_tick_hits
+            && slider_end_hits == &other.slider_end_hits
+            && n300 == &other.n300
+            && n100 == &other.n100
+            && n50 == &other.n50
+            && misses == &other.misses
+            && hitresult_priority == &other.hitresult_priority
+            && legacy_total_score == &other.legacy_total_score
+    }
 }
 
 impl<'map> OsuPerformance<'map> {
@@ -57,6 +102,8 @@ impl<'map> OsuPerformance<'map> {
     /// However, when passing previously calculated attributes, make sure they
     /// have been calculated for the same map and [`Difficulty`] settings.
     /// Otherwise, the final attributes will be incorrect.
+    ///
+    /// [`OsuDifficultyAttributes`]: crate::osu::OsuDifficultyAttributes
     pub fn new(map_or_attrs: impl IntoModePerformance<'map, Osu>) -> Self {
         map_or_attrs.into_performance()
     }
@@ -89,8 +136,10 @@ impl<'map> OsuPerformance<'map> {
     /// [`mode_or_ignore`] instead.
     ///
     /// [`mode_or_ignore`]: Self::mode_or_ignore
-    // The `Ok`-variant is larger in size
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "Ok-variant is still larger in size"
+    )]
     pub fn try_mode(self, mode: GameMode) -> Result<Performance<'map>, Self> {
         match mode {
             GameMode::Osu => Ok(Performance::Osu(self)),
@@ -147,13 +196,34 @@ impl<'map> OsuPerformance<'map> {
         self
     }
 
-    /// Specify how hitresults should be generated.
+    /// Specify the priority of hitresults.
     ///
-    /// Defauls to [`HitResultPriority::BestCase`].
+    /// `HitResultPriority::BestCase` sacrifices 300s and n100s to reduce n50s.
+    /// `HitResultPriority::WorstCase` does the opposite.
     pub const fn hitresult_priority(mut self, priority: HitResultPriority) -> Self {
         self.hitresult_priority = priority;
 
         self
+    }
+
+    /// Specify how hitresults should be generated.
+    pub fn hitresult_generator<H: HitResultGenerator<Osu>>(self) -> OsuPerformance<'map> {
+        OsuPerformance {
+            map_or_attrs: self.map_or_attrs,
+            difficulty: self.difficulty,
+            acc: self.acc,
+            combo: self.combo,
+            large_tick_hits: self.large_tick_hits,
+            small_tick_hits: self.small_tick_hits,
+            slider_end_hits: self.slider_end_hits,
+            n300: self.n300,
+            n100: self.n100,
+            n50: self.n50,
+            misses: self.misses,
+            hitresult_priority: self.hitresult_priority,
+            hitresult_generator: Some(H::generate_hitresults),
+            legacy_total_score: self.legacy_total_score,
+        }
     }
 
     /// Whether the calculated attributes belong to an osu!lazer or osu!stable
@@ -266,69 +336,89 @@ impl<'map> OsuPerformance<'map> {
 
     /// Override a beatmap's set AR.
     ///
-    /// `with_mods` determines if the given value should be used before
+    /// `fixed` determines if the given value should be used before
     /// or after accounting for mods, e.g. on `true` the value will be
     /// used as is and on `false` it will be modified based on the mods.
     ///
     /// | Minimum | Maximum |
     /// | :-----: | :-----: |
     /// | -20     | 20      |
-    pub fn ar(mut self, ar: f32, with_mods: bool) -> Self {
-        self.difficulty = self.difficulty.ar(ar, with_mods);
+    pub fn ar(mut self, ar: f32, fixed: bool) -> Self {
+        self.difficulty = self.difficulty.ar(ar, fixed);
 
         self
     }
 
     /// Override a beatmap's set CS.
     ///
-    /// `with_mods` determines if the given value should be used before
+    /// `fixed` determines if the given value should be used before
     /// or after accounting for mods, e.g. on `true` the value will be
     /// used as is and on `false` it will be modified based on the mods.
     ///
     /// | Minimum | Maximum |
     /// | :-----: | :-----: |
     /// | -20     | 20      |
-    pub fn cs(mut self, cs: f32, with_mods: bool) -> Self {
-        self.difficulty = self.difficulty.cs(cs, with_mods);
+    pub fn cs(mut self, cs: f32, fixed: bool) -> Self {
+        self.difficulty = self.difficulty.cs(cs, fixed);
 
         self
     }
 
     /// Override a beatmap's set HP.
     ///
-    /// `with_mods` determines if the given value should be used before
+    /// `fixed` determines if the given value should be used before
     /// or after accounting for mods, e.g. on `true` the value will be
     /// used as is and on `false` it will be modified based on the mods.
     ///
     /// | Minimum | Maximum |
     /// | :-----: | :-----: |
     /// | -20     | 20      |
-    pub fn hp(mut self, hp: f32, with_mods: bool) -> Self {
-        self.difficulty = self.difficulty.hp(hp, with_mods);
+    pub fn hp(mut self, hp: f32, fixed: bool) -> Self {
+        self.difficulty = self.difficulty.hp(hp, fixed);
 
         self
     }
 
     /// Override a beatmap's set OD.
     ///
-    /// `with_mods` determines if the given value should be used before
+    /// `fixed` determines if the given value should be used before
     /// or after accounting for mods, e.g. on `true` the value will be
     /// used as is and on `false` it will be modified based on the mods.
     ///
     /// | Minimum | Maximum |
     /// | :-----: | :-----: |
     /// | -20     | 20      |
-    pub fn od(mut self, od: f32, with_mods: bool) -> Self {
-        self.difficulty = self.difficulty.od(od, with_mods);
+    pub fn od(mut self, od: f32, fixed: bool) -> Self {
+        self.difficulty = self.difficulty.od(od, fixed);
+
+        self
+    }
+
+    /// Specify the legacy total score.
+    pub const fn legacy_total_score(mut self, legacy_total_score: u32) -> Self {
+        self.legacy_total_score = Some(legacy_total_score);
 
         self
     }
 
     /// Provide parameters through an [`OsuScoreState`].
-    #[allow(clippy::needless_pass_by_value)]
     pub const fn state(mut self, state: OsuScoreState) -> Self {
         let OsuScoreState {
             max_combo,
+            hitresults,
+            legacy_total_score,
+        } = state;
+
+        self.combo = Some(max_combo);
+        self.legacy_total_score = legacy_total_score;
+
+        self.hitresults(hitresults)
+    }
+
+    /// Provide parameters through [`OsuHitResults`].
+    #[expect(clippy::needless_pass_by_value, reason = "more convenient")]
+    pub const fn hitresults(mut self, hitresults: OsuHitResults) -> Self {
+        let OsuHitResults {
             large_tick_hits,
             small_tick_hits,
             slider_end_hits,
@@ -336,9 +426,8 @@ impl<'map> OsuPerformance<'map> {
             n100,
             n50,
             misses,
-        } = state;
+        } = hitresults;
 
-        self.combo = Some(max_combo);
         self.large_tick_hits = Some(large_tick_hits);
         self.small_tick_hits = Some(small_tick_hits);
         self.slider_end_hits = Some(slider_end_hits);
@@ -358,435 +447,53 @@ impl<'map> OsuPerformance<'map> {
         self
     }
 
-    /// Create the [`OsuScoreState`] that will be used for performance calculation.
-    #[allow(clippy::too_many_lines)]
+    /// Create the [`OsuScoreState`] that will be used for performance
+    /// calculation.
+    ///
+    /// If this [`OsuPerformance`] contained a [`Beatmap`], it will be replaced
+    /// by [`OsuDifficultyAttributes`].
+    ///
+    /// [`Beatmap`]: crate::Beatmap
+    /// [`OsuDifficultyAttributes`]: crate::osu::OsuDifficultyAttributes
     pub fn generate_state(&mut self) -> Result<OsuScoreState, ConvertError> {
-        let attrs = match self.map_or_attrs {
-            MapOrAttrs::Map(ref map) => {
-                let attrs = self.difficulty.calculate_for_mode::<Osu>(map)?;
+        self.map_or_attrs.insert_attrs(&self.difficulty)?;
 
-                self.map_or_attrs.insert_attrs(attrs)
-            }
-            MapOrAttrs::Attrs(ref attrs) => attrs,
-        };
+        // SAFETY: We just calculated and inserted the attributes.
+        let state = unsafe { generate_state(self) };
 
-        let max_combo = attrs.max_combo;
-        let n_objects = cmp::min(
-            self.difficulty.get_passed_objects() as u32,
-            attrs.n_objects(),
-        );
-        let priority = self.hitresult_priority;
+        Ok(state)
+    }
 
-        let misses = self.misses.map_or(0, |n| cmp::min(n, n_objects));
-        let n_remaining = n_objects - misses;
+    /// Same as [`OsuPerformance::generate_state`] but verifies that the map
+    /// was not suspicious.
+    pub fn checked_generate_state(&mut self) -> Result<OsuScoreState, CalculateError> {
+        self.map_or_attrs.checked_insert_attrs(&self.difficulty)?;
 
-        let mut n300 = self.n300.map_or(0, |n| cmp::min(n, n_remaining));
-        let mut n100 = self.n100.map_or(0, |n| cmp::min(n, n_remaining));
-        let mut n50 = self.n50.map_or(0, |n| cmp::min(n, n_remaining));
+        // SAFETY: We just calculated and inserted the attributes.
+        let state = unsafe { generate_state(self) };
 
-        let lazer = self.difficulty.get_lazer();
-        let using_classic_slider_acc = self.difficulty.get_mods().no_slider_head_acc(lazer);
-
-        let (origin, slider_end_hits, large_tick_hits, small_tick_hits) =
-            match (lazer, using_classic_slider_acc) {
-                (false, _) => (OsuScoreOrigin::Stable, 0, 0, 0),
-                (true, false) => {
-                    let origin = OsuScoreOrigin::WithSliderAcc {
-                        max_large_ticks: attrs.n_large_ticks,
-                        max_slider_ends: attrs.n_sliders,
-                    };
-
-                    let slider_end_hits = self
-                        .slider_end_hits
-                        .map_or(attrs.n_sliders, |n| cmp::min(n, attrs.n_sliders));
-
-                    let large_tick_hits = self
-                        .large_tick_hits
-                        .map_or(attrs.n_large_ticks, |n| cmp::min(n, attrs.n_large_ticks));
-
-                    (origin, slider_end_hits, large_tick_hits, 0)
-                }
-                (true, true) => {
-                    let origin = OsuScoreOrigin::WithoutSliderAcc {
-                        max_large_ticks: attrs.n_sliders + attrs.n_large_ticks,
-                        max_small_ticks: attrs.n_sliders,
-                    };
-
-                    let small_tick_hits = self
-                        .small_tick_hits
-                        .map_or(attrs.n_sliders, |n| cmp::min(n, attrs.n_sliders));
-
-                    let large_tick_hits = self
-                        .large_tick_hits
-                        .map_or(attrs.n_sliders + attrs.n_large_ticks, |n| {
-                            cmp::min(n, attrs.n_sliders + attrs.n_large_ticks)
-                        });
-
-                    (origin, 0, large_tick_hits, small_tick_hits)
-                }
-            };
-
-        let (slider_acc_value, max_slider_acc_value) = match origin {
-            OsuScoreOrigin::Stable => (0, 0),
-            OsuScoreOrigin::WithSliderAcc {
-                max_large_ticks,
-                max_slider_ends,
-            } => (
-                150 * slider_end_hits + 30 * large_tick_hits,
-                150 * max_slider_ends + 30 * max_large_ticks,
-            ),
-            OsuScoreOrigin::WithoutSliderAcc {
-                max_large_ticks,
-                max_small_ticks,
-            } => (
-                30 * large_tick_hits + 10 * small_tick_hits,
-                30 * max_large_ticks + 10 * max_small_ticks,
-            ),
-        };
-
-        if let Some(acc) = self.acc {
-            let target_total = acc * f64::from(300 * n_objects + max_slider_acc_value);
-
-            match (self.n300, self.n100, self.n50) {
-                (Some(_), Some(_), Some(_)) => {
-                    let remaining = n_objects.saturating_sub(n300 + n100 + n50 + misses);
-
-                    match priority {
-                        HitResultPriority::BestCase | HitResultPriority::Fastest => {
-                            n300 += remaining;
-                        }
-                        HitResultPriority::WorstCase => n50 += remaining,
-                    }
-                }
-                (Some(_), Some(_), None) => n50 = n_objects.saturating_sub(n300 + n100 + misses),
-                (Some(_), None, Some(_)) => n100 = n_objects.saturating_sub(n300 + n50 + misses),
-                (None, Some(_), Some(_)) => n300 = n_objects.saturating_sub(n100 + n50 + misses),
-                (Some(_), None, None) => {
-                    if let HitResultPriority::Fastest = priority {
-                        //     (300N + S) - 300A - 50C - s = 100B
-                        // <=> (300N + S) - 50R - 250A - s = 50B
-                        // <=> ((300N + S) - 50R - 250A - s) / 50 = B
-                        n100 = (f64::round(target_total) as u32)
-                            .saturating_sub(50 * n_remaining + 250 * n300 + slider_acc_value)
-                            / 50;
-                        n50 = n_objects.saturating_sub(n300 + n100 + misses);
-                    } else {
-                        let mut best_dist = f64::MAX;
-
-                        n300 = cmp::min(n300, n_remaining);
-                        let n_remaining = n_remaining - n300;
-
-                        let raw_n100 = (target_total
-                            - f64::from(50 * n_remaining + 300 * n300 + slider_acc_value))
-                            / 50.0;
-                        let min_n100 = cmp::min(n_remaining, raw_n100.floor() as u32);
-                        let max_n100 = cmp::min(n_remaining, raw_n100.ceil() as u32);
-
-                        for new100 in min_n100..=max_n100 {
-                            let new50 = n_remaining - new100;
-
-                            let state = NoComboState {
-                                n300,
-                                n100: new100,
-                                n50: new50,
-                                misses,
-                                large_tick_hits,
-                                small_tick_hits,
-                                slider_end_hits,
-                            };
-
-                            let dist = (acc - state.accuracy(origin)).abs();
-
-                            if dist < best_dist {
-                                best_dist = dist;
-                                n100 = new100;
-                                n50 = new50;
-                            }
-                        }
-                    }
-                }
-                (None, Some(_), None) => {
-                    if let HitResultPriority::Fastest = priority {
-                        //     (300N + S)a - 100B - 50C - s = 300A
-                        // <=> (300N + S)a - 50R - 50B - s = 250A
-                        // <=> ((300N + S)a - 50R - 50B - s) / 250 = A
-                        n300 = (f64::round(target_total) as u32)
-                            .saturating_sub(50 * n_remaining + 50 * n100 + slider_acc_value)
-                            / 250;
-                        n50 = n_objects.saturating_sub(n300 + n100 + misses);
-                    } else {
-                        let mut best_dist = f64::MAX;
-
-                        n100 = cmp::min(n100, n_remaining);
-                        let n_remaining = n_remaining - n100;
-
-                        let raw_n300 = (target_total
-                            - f64::from(50 * n_remaining + 100 * n100 + slider_acc_value))
-                            / 250.0;
-                        let min_n300 = cmp::min(n_remaining, raw_n300.floor() as u32);
-                        let max_n300 = cmp::min(n_remaining, raw_n300.ceil() as u32);
-
-                        for new300 in min_n300..=max_n300 {
-                            let new50 = n_remaining - new300;
-
-                            let state = NoComboState {
-                                n300: new300,
-                                n100,
-                                n50: new50,
-                                misses,
-                                large_tick_hits,
-                                small_tick_hits,
-                                slider_end_hits,
-                            };
-
-                            let curr_dist = (acc - state.accuracy(origin)).abs();
-
-                            if curr_dist < best_dist {
-                                best_dist = curr_dist;
-                                n300 = new300;
-                                n50 = new50;
-                            }
-                        }
-                    }
-                }
-                (None, None, Some(_)) => {
-                    if let HitResultPriority::Fastest = priority {
-                        //     (300N + S)a - 100B - 50C - s = 300A
-                        // <=> (300N + S)a - 100R + 50C - s = 200A
-                        // <=> ((300N + S)a - 100R + 50C - s) / 200 = A
-                        n300 = (f64::round(target_total) as u32 + 50 * n50)
-                            .saturating_sub(100 * n_remaining + slider_acc_value)
-                            / 200;
-                        n100 = n_objects.saturating_sub(n300 + n50 + misses);
-                    } else {
-                        let mut best_dist = f64::MAX;
-
-                        n50 = cmp::min(n50, n_remaining);
-                        let n_remaining = n_remaining - n50;
-
-                        let raw_n300 = (target_total + f64::from(100 * misses + 50 * n50)
-                            - f64::from(100 * n_objects + slider_acc_value))
-                            / 200.0;
-
-                        let min_n300 = cmp::min(n_remaining, raw_n300.floor() as u32);
-                        let max_n300 = cmp::min(n_remaining, raw_n300.ceil() as u32);
-
-                        for new300 in min_n300..=max_n300 {
-                            let new100 = n_remaining - new300;
-
-                            let state = NoComboState {
-                                n300: new300,
-                                n100: new100,
-                                n50,
-                                misses,
-                                large_tick_hits,
-                                small_tick_hits,
-                                slider_end_hits,
-                            };
-
-                            let curr_dist = (acc - state.accuracy(origin)).abs();
-
-                            if curr_dist < best_dist {
-                                best_dist = curr_dist;
-                                n300 = new300;
-                                n100 = new100;
-                            }
-                        }
-                    }
-                }
-                (None, None, None) => {
-                    if let HitResultPriority::Fastest = priority {
-                        //     (300N + S)a - 100B - 50C - s = 300A
-                        // <=> (300N + S)a - 50R - 50B - s = 250A
-                        // <=> ((300N + S)a - 50R - 50B - s) / 250 = A
-
-                        //     (300N + S)a - 300A - 50C - s = 100B
-                        // <=> (300N + S)a - 50R - 250A - s = 50B
-                        // <=> ((300N + S)a - 50R - 250A - s) / 50 = B
-                        let delta = (f64::round_ties_even(target_total) as u32)
-                            .saturating_sub(50 * n_remaining + slider_acc_value);
-
-                        n300 = delta / 250;
-                        n100 = (delta % 250) / 50;
-                        n50 = n_objects.saturating_sub(n300 + n100 + misses);
-                    } else {
-                        let mut best_dist = f64::MAX;
-
-                        let raw_n300 =
-                            (target_total - f64::from(50 * n_remaining + slider_acc_value)) / 250.0;
-                        let min_n300 = cmp::min(n_remaining, raw_n300.floor() as u32);
-                        let max_n300 = cmp::min(n_remaining, raw_n300.ceil() as u32);
-
-                        for new300 in min_n300..=max_n300 {
-                            let raw_n100 = (target_total
-                                - f64::from(50 * n_remaining + 250 * new300 + slider_acc_value))
-                                / 50.0;
-                            let min_n100 = cmp::min(raw_n100.floor() as u32, n_remaining - new300);
-                            let max_n100 = cmp::min(raw_n100.ceil() as u32, n_remaining - new300);
-
-                            for new100 in min_n100..=max_n100 {
-                                let new50 = n_remaining - new300 - new100;
-
-                                let state = NoComboState {
-                                    n300: new300,
-                                    n100: new100,
-                                    n50: new50,
-                                    misses,
-                                    large_tick_hits,
-                                    small_tick_hits,
-                                    slider_end_hits,
-                                };
-
-                                let curr_dist = (acc - state.accuracy(origin)).abs();
-
-                                if curr_dist < best_dist {
-                                    best_dist = curr_dist;
-                                    n300 = new300;
-                                    n100 = new100;
-                                    n50 = new50;
-                                }
-                            }
-                        }
-
-                        match priority {
-                            HitResultPriority::BestCase => {
-                                // Shift n50 to n100 by sacrificing n300
-                                let n = cmp::min(n300, n50 / 4);
-                                n300 -= n;
-                                n100 += 5 * n;
-                                n50 -= 4 * n;
-                            }
-                            HitResultPriority::WorstCase => {
-                                // Shift n100 to n50 by gaining n300
-                                let n = n100 / 5;
-                                n300 += n;
-                                n100 -= 5 * n;
-                                n50 += 4 * n;
-                            }
-                            HitResultPriority::Fastest => unreachable!(),
-                        }
-                    }
-                }
-            }
-        } else {
-            let remaining = n_objects.saturating_sub(n300 + n100 + n50 + misses);
-
-            match priority {
-                HitResultPriority::BestCase | HitResultPriority::Fastest => {
-                    match (self.n300, self.n100, self.n50) {
-                        (None, ..) => n300 = remaining,
-                        (_, None, _) => n100 = remaining,
-                        (.., None) => n50 = remaining,
-                        _ => n300 += remaining,
-                    }
-                }
-                HitResultPriority::WorstCase => match (self.n50, self.n100, self.n300) {
-                    (None, ..) => n50 = remaining,
-                    (_, None, _) => n100 = remaining,
-                    (.., None) => n300 = remaining,
-                    _ => n50 += remaining,
-                },
-            }
-        }
-
-        let max_possible_combo = max_combo.saturating_sub(misses);
-
-        let max_combo = self.combo.map_or(max_possible_combo, |combo| {
-            cmp::min(combo, max_possible_combo)
-        });
-
-        self.combo = Some(max_combo);
-        self.slider_end_hits = Some(slider_end_hits);
-        self.large_tick_hits = Some(large_tick_hits);
-        self.small_tick_hits = Some(small_tick_hits);
-        self.n300 = Some(n300);
-        self.n100 = Some(n100);
-        self.n50 = Some(n50);
-        self.misses = Some(misses);
-
-        Ok(OsuScoreState {
-            max_combo,
-            large_tick_hits,
-            small_tick_hits,
-            slider_end_hits,
-            n300,
-            n100,
-            n50,
-            misses,
-        })
+        Ok(state)
     }
 
     /// Calculate all performance related values, including pp and stars.
     pub fn calculate(mut self) -> Result<OsuPerformanceAttributes, ConvertError> {
         let state = self.generate_state()?;
 
-        let attrs = match self.map_or_attrs {
-            MapOrAttrs::Attrs(attrs) => attrs,
-            MapOrAttrs::Map(ref map) => self.difficulty.calculate_for_mode::<Osu>(map)?,
-        };
+        // SAFETY: Attributes are calculated in `generate_state`.
+        let attrs = unsafe { calculate(self, state) };
 
-        let mods = self.difficulty.get_mods();
-        let lazer = self.difficulty.get_lazer();
-        let using_classic_slider_acc = mods.no_slider_head_acc(lazer);
+        Ok(attrs)
+    }
 
-        let mut effective_miss_count = f64::from(state.misses);
+    /// Same as [`OsuPerformance::calculate`] but verifies that the map was not
+    /// suspicious.
+    pub fn checked_calculate(mut self) -> Result<OsuPerformanceAttributes, CalculateError> {
+        let state = self.checked_generate_state()?;
 
-        if attrs.n_sliders > 0 {
-            if using_classic_slider_acc {
-                // * Consider that full combo is maximum combo minus dropped slider tails since they don't contribute to combo but also don't break it
-                // * In classic scores we can't know the amount of dropped sliders so we estimate to 10% of all sliders on the map
-                let full_combo_threshold =
-                    f64::from(attrs.max_combo) - 0.1 * f64::from(attrs.n_sliders);
+        // SAFETY: Attributes are calculated in `checked_generate_state`.
+        let attrs = unsafe { calculate(self, state) };
 
-                if f64::from(state.max_combo) < full_combo_threshold {
-                    effective_miss_count =
-                        full_combo_threshold / f64::from(state.max_combo).max(1.0);
-                }
-
-                // * In classic scores there can't be more misses than a sum of all non-perfect judgements
-                effective_miss_count = effective_miss_count.min(total_imperfect_hits(&state));
-            } else {
-                let full_combo_threshold =
-                    f64::from(attrs.max_combo - n_slider_ends_dropped(&attrs, &state));
-
-                if f64::from(state.max_combo) < full_combo_threshold {
-                    effective_miss_count =
-                        full_combo_threshold / f64::from(state.max_combo).max(1.0);
-                }
-
-                // * Combine regular misses with tick misses since tick misses break combo as well
-                effective_miss_count = effective_miss_count
-                    .min(f64::from(n_large_tick_miss(&attrs, &state) + state.misses));
-            }
-        }
-
-        effective_miss_count = effective_miss_count.max(f64::from(state.misses));
-        effective_miss_count = effective_miss_count.min(f64::from(state.total_hits()));
-
-        let origin = match (lazer, using_classic_slider_acc) {
-            (false, _) => OsuScoreOrigin::Stable,
-            (true, false) => OsuScoreOrigin::WithSliderAcc {
-                max_large_ticks: attrs.n_large_ticks,
-                max_slider_ends: attrs.n_sliders,
-            },
-            (true, true) => OsuScoreOrigin::WithoutSliderAcc {
-                max_large_ticks: attrs.n_sliders + attrs.n_large_ticks,
-                max_small_ticks: attrs.n_sliders,
-            },
-        };
-
-        let acc = state.accuracy(origin);
-
-        let inner = OsuPerformanceCalculator::new(
-            attrs,
-            mods,
-            acc,
-            state,
-            effective_miss_count,
-            using_classic_slider_acc,
-        );
-
-        Ok(inner.calculate())
+        Ok(attrs)
     }
 
     pub(crate) const fn from_map_or_attrs(map_or_attrs: MapOrAttrs<'map, Osu>) -> Self {
@@ -803,10 +510,15 @@ impl<'map> OsuPerformance<'map> {
             n50: None,
             misses: None,
             hitresult_priority: HitResultPriority::DEFAULT,
+            hitresult_generator: None,
+            legacy_total_score: None,
         }
     }
 
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "Result type serves more as 'Either'"
+    )]
     pub(crate) fn try_convert_map(
         map_or_attrs: MapOrAttrs<'map, Osu>,
         mode: GameMode,
@@ -838,76 +550,110 @@ impl<'map, T: IntoModePerformance<'map, Osu>> From<T> for OsuPerformance<'map> {
     }
 }
 
-fn total_imperfect_hits(state: &OsuScoreState) -> f64 {
-    f64::from(state.n100 + state.n50 + state.misses)
-}
+/// # Safety
+/// Caller must ensure that the internal [`MapOrAttrs`] contains attributes.
+unsafe fn generate_state(perf: &mut OsuPerformance<'_>) -> OsuScoreState {
+    // SAFETY: Ensured by caller
+    let attrs = unsafe { perf.map_or_attrs.get_attrs() };
 
-const fn n_slider_ends_dropped(attrs: &OsuDifficultyAttributes, state: &OsuScoreState) -> u32 {
-    attrs.n_sliders - state.slider_end_hits
-}
+    let inspect = Osu::inspect_performance(perf, attrs);
 
-const fn n_large_tick_miss(attrs: &OsuDifficultyAttributes, state: &OsuScoreState) -> u32 {
-    attrs.n_large_ticks - state.large_tick_hits
-}
+    let total_hits = inspect.total_hits();
+    let misses = inspect.misses();
 
-struct NoComboState {
-    n300: u32,
-    n100: u32,
-    n50: u32,
-    misses: u32,
-    large_tick_hits: u32,
-    small_tick_hits: u32,
-    slider_end_hits: u32,
-}
+    let mut hitresults = match perf.hitresult_generator {
+        Some(generator) => generator(inspect),
+        None => <Fast as HitResultGenerator<Osu>>::generate_hitresults(inspect),
+    };
 
-impl NoComboState {
-    fn accuracy(&self, origin: OsuScoreOrigin) -> f64 {
-        let mut numerator = 300 * self.n300 + 100 * self.n100 + 50 * self.n50;
-        let mut denominator = 300 * (self.n300 + self.n100 + self.n50 + self.misses);
+    let remain = total_hits.saturating_sub(hitresults.total_hits());
 
-        match origin {
-            OsuScoreOrigin::Stable => {}
-            OsuScoreOrigin::WithSliderAcc {
-                max_large_ticks,
-                max_slider_ends,
-            } => {
-                let slider_end_hits = self.slider_end_hits.min(max_slider_ends);
-                let large_tick_hits = self.large_tick_hits.min(max_large_ticks);
-
-                numerator += 150 * slider_end_hits + 30 * large_tick_hits;
-                denominator += 150 * max_slider_ends + 30 * max_large_ticks;
-            }
-            OsuScoreOrigin::WithoutSliderAcc {
-                max_large_ticks,
-                max_small_ticks,
-            } => {
-                let large_tick_hits = self.large_tick_hits.min(max_large_ticks);
-                let small_tick_hits = self.small_tick_hits.min(max_small_ticks);
-
-                numerator += 30 * large_tick_hits + 10 * small_tick_hits;
-                denominator += 30 * max_large_ticks + 10 * max_small_ticks;
-            }
-        }
-
-        if denominator == 0 {
-            0.0
-        } else {
-            f64::from(numerator) / f64::from(denominator)
-        }
+    match perf.hitresult_priority {
+        HitResultPriority::BestCase => match (perf.n300, perf.n100, perf.n50) {
+            (None, ..) => hitresults.n300 += remain,
+            (_, None, _) => hitresults.n100 += remain,
+            (.., None) => hitresults.n50 += remain,
+            _ => hitresults.n300 += remain,
+        },
+        HitResultPriority::WorstCase => match (perf.n50, perf.n100, perf.n300) {
+            (None, ..) => hitresults.n50 += remain,
+            (_, None, _) => hitresults.n100 += remain,
+            (.., None) => hitresults.n300 += remain,
+            _ => hitresults.n50 += remain,
+        },
     }
+
+    let max_possible_combo = attrs.max_combo.saturating_sub(misses);
+
+    let max_combo = perf.combo.map_or(max_possible_combo, |combo| {
+        cmp::min(combo, max_possible_combo)
+    });
+
+    perf.combo = Some(max_combo);
+
+    let OsuHitResults {
+        large_tick_hits,
+        small_tick_hits,
+        slider_end_hits,
+        n300,
+        n100,
+        n50,
+        misses,
+    } = &hitresults;
+
+    perf.slider_end_hits = Some(*slider_end_hits);
+    perf.large_tick_hits = Some(*large_tick_hits);
+    perf.small_tick_hits = Some(*small_tick_hits);
+    perf.n300 = Some(*n300);
+    perf.n100 = Some(*n100);
+    perf.n50 = Some(*n50);
+    perf.misses = Some(*misses);
+
+    OsuScoreState {
+        max_combo,
+        hitresults,
+        legacy_total_score: perf.legacy_total_score,
+    }
+}
+
+/// # Safety
+/// Caller must ensure that the internal [`MapOrAttrs`] contains attributes.
+unsafe fn calculate(perf: OsuPerformance<'_>, state: OsuScoreState) -> OsuPerformanceAttributes {
+    // SAFETY: Ensured by caller
+    let attrs = unsafe { perf.map_or_attrs.into_attrs() };
+
+    let mods = perf.difficulty.get_mods();
+    let lazer = perf.difficulty.get_lazer();
+    let using_classic_slider_acc = mods.no_slider_head_acc(lazer);
+
+    let origin = match (lazer, using_classic_slider_acc) {
+        (false, _) => OsuScoreOrigin::Stable,
+        (true, false) => OsuScoreOrigin::WithSliderAcc {
+            max_large_ticks: attrs.n_large_ticks,
+            max_slider_ends: attrs.n_sliders,
+        },
+        (true, true) => OsuScoreOrigin::WithoutSliderAcc {
+            max_large_ticks: attrs.n_sliders + attrs.n_large_ticks,
+            max_small_ticks: attrs.n_sliders,
+        },
+    };
+
+    let acc = state.hitresults.accuracy(origin);
+
+    let inner = OsuPerformanceCalculator::new(attrs, mods, acc, state, using_classic_slider_acc);
+
+    inner.calculate()
 }
 
 #[cfg(test)]
 mod test {
     use std::sync::OnceLock;
 
-    use proptest::prelude::*;
-    use rosu_mods::{GameModIntermode, GameModsIntermode};
-
     use crate::{
-        any::{DifficultyAttributes, PerformanceAttributes},
-        taiko::{TaikoDifficultyAttributes, TaikoPerformanceAttributes},
         Beatmap,
+        any::{DifficultyAttributes, PerformanceAttributes},
+        osu::OsuDifficultyAttributes,
+        taiko::{TaikoDifficultyAttributes, TaikoPerformanceAttributes},
     };
 
     use super::*;
@@ -944,228 +690,6 @@ mod test {
             .to_owned()
     }
 
-    /// Checks all remaining hitresult combinations w.r.t. the given parameters
-    /// and returns the [`OsuScoreState`] that matches `acc` the best.
-    ///
-    /// Very slow but accurate.
-    #[allow(clippy::too_many_arguments)]
-    fn brute_force_best(
-        lazer: bool,
-        classic: bool,
-        acc: f64,
-        large_tick_hits: Option<u32>,
-        slider_end_hits: Option<u32>,
-        n300: Option<u32>,
-        n100: Option<u32>,
-        n50: Option<u32>,
-        misses: u32,
-        best_case: bool,
-    ) -> OsuScoreState {
-        let misses = cmp::min(misses, N_OBJECTS);
-
-        let (origin, slider_end_hits, large_tick_hits, small_tick_hits) = match (lazer, classic) {
-            (false, _) => (OsuScoreOrigin::Stable, 0, 0, 0),
-            (true, false) => {
-                let origin = OsuScoreOrigin::WithSliderAcc {
-                    max_large_ticks: N_SLIDER_TICKS,
-                    max_slider_ends: N_SLIDERS,
-                };
-
-                let slider_end_hits = slider_end_hits.map_or(N_SLIDERS, |n| cmp::min(n, N_SLIDERS));
-
-                let large_tick_hits =
-                    large_tick_hits.map_or(N_SLIDER_TICKS, |n| cmp::min(n, N_SLIDER_TICKS));
-
-                (origin, slider_end_hits, large_tick_hits, 0)
-            }
-            (true, true) => {
-                let origin = OsuScoreOrigin::WithoutSliderAcc {
-                    max_large_ticks: N_SLIDERS + N_SLIDER_TICKS,
-                    max_small_ticks: N_SLIDERS,
-                };
-
-                let small_tick_hits = slider_end_hits.map_or(N_SLIDERS, |n| cmp::min(n, N_SLIDERS));
-
-                let large_tick_hits = large_tick_hits.map_or(N_SLIDERS + N_SLIDER_TICKS, |n| {
-                    cmp::min(n, N_SLIDERS + N_SLIDER_TICKS)
-                });
-
-                (origin, 0, large_tick_hits, small_tick_hits)
-            }
-        };
-
-        let mut best_state = OsuScoreState {
-            large_tick_hits,
-            small_tick_hits,
-            slider_end_hits,
-            misses,
-            ..Default::default()
-        };
-
-        let mut best_dist = f64::INFINITY;
-
-        let n_remaining = N_OBJECTS - misses;
-
-        let (min_n300, max_n300) = match (n300, n100, n50) {
-            (Some(n300), ..) => (cmp::min(n_remaining, n300), cmp::min(n_remaining, n300)),
-            (None, Some(n100), Some(n50)) => (
-                n_remaining.saturating_sub(n100 + n50),
-                n_remaining.saturating_sub(n100 + n50),
-            ),
-            (None, ..) => (
-                0,
-                n_remaining.saturating_sub(n100.unwrap_or(0) + n50.unwrap_or(0)),
-            ),
-        };
-
-        for new300 in min_n300..=max_n300 {
-            let (min_n100, max_n100) = match (n100, n50) {
-                (Some(n100), _) => (cmp::min(n_remaining, n100), cmp::min(n_remaining, n100)),
-                (None, Some(n50)) => (
-                    n_remaining.saturating_sub(new300 + n50),
-                    n_remaining.saturating_sub(new300 + n50),
-                ),
-                (None, None) => (0, n_remaining - new300),
-            };
-
-            for new100 in min_n100..=max_n100 {
-                let new50 = match n50 {
-                    Some(n50) => cmp::min(n_remaining, n50),
-                    None => n_remaining.saturating_sub(new300 + new100),
-                };
-
-                let state = NoComboState {
-                    n300: new300,
-                    n100: new100,
-                    n50: new50,
-                    misses,
-                    large_tick_hits,
-                    small_tick_hits,
-                    slider_end_hits,
-                };
-
-                let curr_acc = state.accuracy(origin);
-                let curr_dist = (acc - curr_acc).abs();
-
-                if curr_dist < best_dist {
-                    best_dist = curr_dist;
-                    best_state.n300 = new300;
-                    best_state.n100 = new100;
-                    best_state.n50 = new50;
-                }
-            }
-        }
-
-        if best_state.n300 + best_state.n100 + best_state.n50 < n_remaining {
-            let remaining = n_remaining - (best_state.n300 + best_state.n100 + best_state.n50);
-
-            if best_case {
-                best_state.n300 += remaining;
-            } else {
-                best_state.n50 += remaining;
-            }
-        }
-
-        if n300.is_none() && n100.is_none() && n50.is_none() {
-            if best_case {
-                let n = cmp::min(best_state.n300, best_state.n50 / 4);
-                best_state.n300 -= n;
-                best_state.n100 += 5 * n;
-                best_state.n50 -= 4 * n;
-            } else {
-                let n = best_state.n100 / 5;
-                best_state.n300 += n;
-                best_state.n100 -= 5 * n;
-                best_state.n50 += 4 * n;
-            }
-        }
-
-        best_state
-    }
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(1000))]
-
-        #[test]
-        fn hitresults(
-            lazer in prop::bool::ANY,
-            classic in prop::bool::ANY,
-            acc in 0.0_f64..=1.0,
-            large_tick_hits in prop::option::weighted(0.1, 0_u32..=N_SLIDERS + N_SLIDER_TICKS + 10),
-            slider_end_hits in prop::option::weighted(0.1, 0_u32..=N_SLIDERS + 10),
-            n300 in prop::option::weighted(0.1, 0_u32..=N_OBJECTS + 10),
-            n100 in prop::option::weighted(0.1, 0_u32..=N_OBJECTS + 10),
-            n50 in prop::option::weighted(0.1, 0_u32..=N_OBJECTS + 10),
-            n_misses in prop::option::weighted(0.15, 0_u32..=N_OBJECTS + 10),
-            best_case in prop::bool::ANY,
-        ) {
-            let attrs = attrs();
-            let max_combo = attrs.max_combo();
-
-            let priority = if best_case {
-                HitResultPriority::BestCase
-            } else {
-                HitResultPriority::WorstCase
-            };
-
-            let mut state = OsuPerformance::from(attrs)
-                .accuracy(acc * 100.0)
-                .lazer(lazer)
-                .hitresult_priority(priority);
-
-            if lazer && classic {
-                let mut mods = GameModsIntermode::new();
-                mods.insert(GameModIntermode::Classic);
-                state = state.mods(mods);
-            }
-
-            if let Some(large_tick_hits) = large_tick_hits {
-                state = state.large_tick_hits(large_tick_hits);
-            }
-
-            if let Some(slider_end_hits) = slider_end_hits {
-                state = state.slider_end_hits(slider_end_hits);
-                state = state.small_tick_hits(slider_end_hits);
-            }
-
-            if let Some(n300) = n300 {
-                state = state.n300(n300);
-            }
-
-            if let Some(n100) = n100 {
-                state = state.n100(n100);
-            }
-
-            if let Some(n50) = n50 {
-                state = state.n50(n50);
-            }
-
-            if let Some(misses) = n_misses {
-                state = state.misses(misses);
-            }
-
-            let first = state.generate_state().unwrap();
-            let state = state.generate_state().unwrap();
-            assert_eq!(first, state);
-
-            let mut expected = brute_force_best(
-                lazer,
-                classic,
-                acc,
-                large_tick_hits,
-                slider_end_hits,
-                n300,
-                n100,
-                n50,
-                n_misses.unwrap_or(0),
-                best_case,
-            );
-            expected.max_combo = max_combo.saturating_sub(n_misses.map_or(0, |n| cmp::min(n, N_OBJECTS)));
-
-            assert_eq!(state, expected);
-        }
-    }
-
     #[test]
     fn hitresults_n300_n100_misses_best() {
         let state = OsuPerformance::from(attrs())
@@ -1178,8 +702,7 @@ mod test {
             .generate_state()
             .unwrap();
 
-        let expected = OsuScoreState {
-            max_combo: 500,
+        let expected = OsuHitResults {
             large_tick_hits: N_SLIDER_TICKS,
             small_tick_hits: 0,
             slider_end_hits: N_SLIDERS,
@@ -1189,7 +712,7 @@ mod test {
             misses: 2,
         };
 
-        assert_eq!(state, expected);
+        assert_eq!(state.hitresults, expected);
     }
 
     #[test]
@@ -1204,8 +727,7 @@ mod test {
             .generate_state()
             .unwrap();
 
-        let expected = OsuScoreState {
-            max_combo: 500,
+        let expected = OsuHitResults {
             large_tick_hits: 0,
             small_tick_hits: 0,
             slider_end_hits: 0,
@@ -1215,7 +737,7 @@ mod test {
             misses: 2,
         };
 
-        assert_eq!(state, expected);
+        assert_eq!(state.hitresults, expected);
     }
 
     #[test]
@@ -1229,8 +751,7 @@ mod test {
             .generate_state()
             .unwrap();
 
-        let expected = OsuScoreState {
-            max_combo: 500,
+        let expected = OsuHitResults {
             large_tick_hits: N_SLIDER_TICKS,
             small_tick_hits: 0,
             slider_end_hits: N_SLIDERS,
@@ -1240,7 +761,7 @@ mod test {
             misses: 2,
         };
 
-        assert_eq!(state, expected);
+        assert_eq!(state.hitresults, expected);
     }
 
     #[test]
@@ -1256,8 +777,7 @@ mod test {
             .generate_state()
             .unwrap();
 
-        let expected = OsuScoreState {
-            max_combo: 500,
+        let expected = OsuHitResults {
             large_tick_hits: 0,
             small_tick_hits: 0,
             slider_end_hits: 0,
@@ -1267,7 +787,7 @@ mod test {
             misses: 2,
         };
 
-        assert_eq!(state, expected);
+        assert_eq!(state.hitresults, expected);
     }
 
     #[test]
@@ -1304,14 +824,18 @@ mod test {
 
         assert!(OsuPerformance::try_new(TaikoDifficultyAttributes::default()).is_none());
         assert!(OsuPerformance::try_new(TaikoPerformanceAttributes::default()).is_none());
-        assert!(OsuPerformance::try_new(DifficultyAttributes::Taiko(
-            TaikoDifficultyAttributes::default()
-        ))
-        .is_none());
-        assert!(OsuPerformance::try_new(PerformanceAttributes::Taiko(
-            TaikoPerformanceAttributes::default()
-        ))
-        .is_none());
+        assert!(
+            OsuPerformance::try_new(DifficultyAttributes::Taiko(
+                TaikoDifficultyAttributes::default()
+            ))
+            .is_none()
+        );
+        assert!(
+            OsuPerformance::try_new(PerformanceAttributes::Taiko(
+                TaikoPerformanceAttributes::default()
+            ))
+            .is_none()
+        );
         assert!(OsuPerformance::try_new(&map).is_none());
         assert!(OsuPerformance::try_new(map).is_none());
     }

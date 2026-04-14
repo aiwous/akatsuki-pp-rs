@@ -1,8 +1,8 @@
-use rosu_map::section::general::GameMode;
-
 use crate::{
-    any::difficulty::skills::StrainSkill, model::mode::ConvertError,
-    taiko::difficulty::DifficultyValues, Beatmap, Difficulty,
+    Beatmap, Difficulty,
+    any::difficulty::skills::StrainSkill,
+    model::mode::ConvertError,
+    taiko::{convert::prepare_map, difficulty::DifficultyValues},
 };
 
 use super::difficulty::TaikoSkills;
@@ -30,13 +30,15 @@ impl TaikoStrains {
 }
 
 pub fn strains(difficulty: &Difficulty, map: &Beatmap) -> Result<TaikoStrains, ConvertError> {
-    let map = map.convert_ref(GameMode::Taiko, difficulty.get_mods())?;
+    let map = prepare_map(difficulty, map)?;
 
     let great_hit_window = map
         .attributes()
         .difficulty(difficulty)
+        .build()
         .hit_windows()
-        .od_great;
+        .od_great
+        .unwrap_or(0.0);
 
     let values = DifficultyValues::calculate(difficulty, &map, great_hit_window);
 
@@ -49,10 +51,10 @@ pub fn strains(difficulty: &Difficulty, map: &Beatmap) -> Result<TaikoStrains, C
     } = values.skills;
 
     Ok(TaikoStrains {
-        color: color.into_current_strain_peaks().into_vec(),
-        reading: reading.into_current_strain_peaks().into_vec(),
-        rhythm: rhythm.into_current_strain_peaks().into_vec(),
-        stamina: stamina.into_current_strain_peaks().into_vec(),
-        single_color_stamina: single_color_stamina.into_current_strain_peaks().into_vec(),
+        color: color.into_current_strain_peaks(),
+        reading: reading.into_current_strain_peaks(),
+        rhythm: rhythm.into_current_strain_peaks(),
+        stamina: stamina.into_current_strain_peaks(),
+        single_color_stamina: single_color_stamina.into_current_strain_peaks(),
     })
 }

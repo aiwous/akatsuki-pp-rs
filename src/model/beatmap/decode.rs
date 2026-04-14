@@ -1,24 +1,24 @@
 use std::{cmp, error, fmt, slice};
 
 use rosu_map::{
+    DecodeBeatmap, DecodeState,
     section::{
         difficulty::{Difficulty, DifficultyKey, ParseDifficultyError},
         events::{BreakPeriod, EventType, ParseEventTypeError},
         general::{GameMode, GeneralKey, ParseGameModeError},
         hit_objects::{
-            hit_samples::{HitSoundType, ParseHitSoundTypeError},
             HitObjectType, ParseHitObjectTypeError, PathControlPoint, PathType,
+            hit_samples::{HitSoundType, ParseHitSoundTypeError},
         },
         timing_points::{ControlPoint, EffectFlags, ParseEffectFlagsError},
     },
-    util::{KeyValue, ParseNumber, ParseNumberError, Pos, StrExt, MAX_PARSE_VALUE},
-    DecodeBeatmap, DecodeState,
+    util::{KeyValue, MAX_PARSE_VALUE, ParseNumber, ParseNumberError, Pos, StrExt},
 };
 
 use crate::{
     model::{
         control_point::{
-            difficulty_point_at, effect_point_at, DifficultyPoint, EffectPoint, TimingPoint,
+            DifficultyPoint, EffectPoint, TimingPoint, difficulty_point_at, effect_point_at,
         },
         hit_object::{HitObject, HitObjectKind, HoldNote, Slider, Spinner},
     },
@@ -40,7 +40,6 @@ pub struct BeatmapState {
     effect_points: Vec<EffectPoint>,
     hit_objects: Vec<HitObject>,
     hit_sounds: Vec<HitSoundType>,
-    metadata: Option<rosu_map::section::metadata::Metadata>,
 
     pending_control_points_time: f64,
     pending_timing_point: Option<TimingPoint>,
@@ -261,7 +260,6 @@ impl DecodeState for BeatmapState {
             effect_points: Vec::with_capacity(32),
             hit_objects: Vec::with_capacity(512),
             hit_sounds: Vec::with_capacity(512),
-            metadata: None,
             pending_control_points_time: 0.0,
             pending_timing_point: None,
             pending_difficulty_point: None,
@@ -310,10 +308,6 @@ impl From<BeatmapState> for Beatmap {
 
         sorter.sort(&mut state.hit_objects);
         sorter.sort(&mut state.hit_sounds);
-
-        if state.mode == GameMode::Mania {
-            sort::osu_legacy(&mut state.hit_objects);
-        }
 
         Beatmap {
             version: state.version,
@@ -549,10 +543,10 @@ impl DecodeBeatmap for Beatmap {
             1.0
         };
 
-        if let Some(numerator) = split.next() {
-            if unlikely(i32::parse(numerator)? < 1) {
-                return Err(ParseBeatmapError::TimeSignature);
-            }
+        if let Some(numerator) = split.next()
+            && unlikely(i32::parse(numerator)? < 1)
+        {
+            return Err(ParseBeatmapError::TimeSignature);
         }
 
         let _ = split.next(); // sample set
@@ -598,7 +592,7 @@ impl DecodeBeatmap for Beatmap {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines, reason = "staying in-sync with lazer")]
     fn parse_hit_objects(state: &mut Self::State, line: &str) -> Result<(), Self::Error> {
         let mut split = line.trim_comment().split(',');
 
