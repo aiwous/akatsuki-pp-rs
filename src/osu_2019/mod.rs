@@ -7,6 +7,9 @@ use osu_object::OsuObject;
 mod pp;
 pub use pp::{OsuAttributeProvider, OsuPP};
 
+mod reading;
+mod reading_skill;
+
 mod skill;
 use skill::Skill;
 

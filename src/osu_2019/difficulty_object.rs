@@ -8,6 +8,11 @@ pub(crate) struct DifficultyObject<'h> {
     pub(crate) travel_dist: f32,
     pub(crate) angle: Option<f32>,
 
+    /// Angle of the movement vector (current - prev), normalised so that
+    /// symmetrical vectors in any axis map to the same angle.
+    /// `atan2(abs(vy), abs(vx))`
+    pub(crate) normalised_vector_angle: Option<f32>,
+
     pub(crate) delta: f32,
     pub(crate) strain_time: f32,
 }
@@ -34,6 +39,15 @@ impl<'h> DifficultyObject<'h> {
             ((pos - prev_cursor_pos) * scaling_factor).length()
         };
 
+        // Compute normalised vector angle if we have a previous object
+        // and current is not a spinner
+        let normalised_vector_angle = if !base.is_spinner() && prev_prev.is_some() {
+            let v = pos - prev_cursor_pos;
+            Some(v.y.abs().atan2(v.x.abs()))
+        } else {
+            None
+        };
+
         let angle = prev_prev.map(|prev_prev| {
             let prev_prev_cursor_pos = prev_prev.end_pos;
 
@@ -53,9 +67,11 @@ impl<'h> DifficultyObject<'h> {
             jump_dist,
             travel_dist,
             angle,
+            normalised_vector_angle,
 
             delta,
             strain_time,
         }
     }
 }
+

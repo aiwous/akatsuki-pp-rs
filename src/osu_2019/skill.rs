@@ -1,4 +1,5 @@
 use super::{DifficultyObject, SkillKind};
+use super::skill_kind::RecentObject;
 
 use std::cmp::Ordering;
 
@@ -9,6 +10,9 @@ const AIM_SKILL_MULTIPLIER: f32 = 26.25;
 const AIM_STRAIN_DECAY_BASE: f32 = 0.15;
 
 const DECAY_WEIGHT: f32 = 0.9;
+
+/// Maximum number of recent objects to keep for angle repetition lookback
+const MAX_RECENT_OBJECTS: usize = 8;
 
 pub(crate) struct Skill {
     current_strain: f32,
@@ -21,6 +25,9 @@ pub(crate) struct Skill {
     pub(crate) object_strains: Vec<f32>,
 
     difficulty_value: Option<f32>,
+
+    /// Ring buffer of recent objects for angle repetition lookback (newest first)
+    recent_objects: Vec<RecentObject>,
 }
 
 impl Skill {
@@ -36,7 +43,9 @@ impl Skill {
             prev_time: None,
             object_strains: Vec::new(),
 
-            difficulty_value: None
+            difficulty_value: None,
+
+            recent_objects: Vec::with_capacity(MAX_RECENT_OBJECTS),
         }
     }
 
@@ -53,15 +62,58 @@ impl Skill {
     #[inline]
     pub(crate) fn process(&mut self, current: &DifficultyObject<'_>) {
         self.current_strain *= self.strain_decay(current.delta);
-        self.current_strain += self.kind.strain_value_of(current) * self.skill_multiplier();
+        self.current_strain +=
+            self.kind.strain_value_of(current, &self.recent_objects) * self.skill_multiplier();
 
         self.object_strains.push(self.current_strain);
 
         self.current_section_peak = self.current_section_peak.max(self.current_strain);
         self.prev_time.replace(current.base.time);
+
+        // Update recent objects buffer (newest first)
+        let recent = RecentObject {
+            normalised_vector_angle: current.normalised_vector_angle,
+            strain_time: current.strain_time,
+            jump_dist: current.jump_dist,
+            angle: current.angle,
+        };
+
+        if self.recent_objects.len() >= MAX_RECENT_OBJECTS {
+            self.recent_objects.pop();
+        }
+        self.recent_objects.insert(0, recent);
     }
 
     pub(crate) fn difficulty_value(&mut self) -> f32 {
+        if self.strain_peaks.is_empty() {
+            return 0.0;
+        }
+
+        // --- Backload Spike Penalty Logic ---
+        // We identify maps that dump all their difficulty into the final moments.
+        let n_sections = self.strain_peaks.len();
+        let early_section_count = (n_sections as f32 * 0.85).floor() as usize;
+
+        if n_sections > 5 && early_section_count > 0 {
+            // 1. Calculate average strain of the first 85% (the "baseline")
+            let early_sum: f32 = self.strain_peaks.iter().take(early_section_count).sum();
+            let early_avg = early_sum / early_section_count as f32;
+
+            // 2. Identify and nerf spikes in the final 15%
+            // Only nerf if the section is significantly harder than the early average.
+            let spike_threshold = (early_avg * 1.35).max(1.0); // Penalty starts at 35% harder than average
+
+            for i in early_section_count..n_sections {
+                let peak = self.strain_peaks[i];
+                if peak > spike_threshold {
+                    // Penalty: pull the peak towards the baseline.
+                    // NewPeak = Threshold + (OldPeak - Threshold) * 0.5 (linear dampening)
+                    self.strain_peaks[i] = spike_threshold + (peak - spike_threshold) * 0.5;
+                }
+            }
+        }
+        // ------------------------------------
+
         let mut difficulty = 0.0;
         let mut weight = 1.0;
 
