@@ -1,5 +1,5 @@
-use super::{DifficultyObject, SkillKind};
 use super::skill_kind::RecentObject;
+use super::{DifficultyObject, SkillKind};
 
 use std::cmp::Ordering;
 
@@ -95,20 +95,24 @@ impl Skill {
         let early_section_count = (n_sections as f32 * 0.85).floor() as usize;
 
         if n_sections > 5 && early_section_count > 0 {
-            // 1. Calculate average strain of the first 85% (the "baseline")
-            let early_sum: f32 = self.strain_peaks.iter().take(early_section_count).sum();
-            let early_avg = early_sum / early_section_count as f32;
+            // 1. Calculate max strain of the first 85% (the "baseline")
+            let early_max = self
+                .strain_peaks
+                .iter()
+                .take(early_section_count)
+                .cloned()
+                .fold(0.0, f32::max);
 
             // 2. Identify and nerf spikes in the final 15%
-            // Only nerf if the section is significantly harder than the early average.
-            let spike_threshold = (early_avg * 1.35).max(1.0); // Penalty starts at 35% harder than average
+            // By using early_max, maps with linear difficulty increases are preserved.
+            let spike_threshold = (early_max * 1.35).max(1.0);
 
             for i in early_section_count..n_sections {
                 let peak = self.strain_peaks[i];
                 if peak > spike_threshold {
-                    // Penalty: pull the peak towards the baseline.
-                    // NewPeak = Threshold + (OldPeak - Threshold) * 0.5 (linear dampening)
-                    self.strain_peaks[i] = spike_threshold + (peak - spike_threshold) * 0.5;
+                    // Penalty: pull the peak towards the threshold.
+                    // NewPeak = Threshold + (OldPeak - Threshold) * 0.62
+                    self.strain_peaks[i] = spike_threshold + (peak - spike_threshold) * 0.62;
                 }
             }
         }

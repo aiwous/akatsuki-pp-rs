@@ -17,7 +17,7 @@ use crate::{
 };
 
 // * This is being adjusted to keep the final pp value scaled around what it used to be when changing things.
-pub const PERFORMANCE_BASE_MULTIPLIER: f64 = 1.15;
+pub const PERFORMANCE_BASE_MULTIPLIER: f64 = 1.14;
 
 
 pub(super) struct OsuPerformanceCalculator<'mods> {
@@ -100,11 +100,10 @@ impl OsuPerformanceCalculator<'_> {
             // * this is well beyond currently maximum achievable OD which is 12.17 (DTx2 + DA with OD11)
             let (n100_mult, n50_mult) = if od > 0.0 {
                 (
-                    (1.0 - (od / 13.33).powf(1.8)).max(0.0),
+                    0.75 * (1.0 - od / 13.33).max(0.0),
                     (1.0 - (od / 13.33).powf(5.0)).max(0.0),
                 )
             } else {
-
                 (1.0, 1.0)
             };
 
@@ -240,15 +239,8 @@ impl OsuPerformanceCalculator<'_> {
                     Some(self.attrs.slider_factor),
                     None,
                 );
-        } else if self.mods.hd() {
-            // * We want to give more reward for lower AR when it comes to aim and HD. This nerfs high AR and buffs lower AR.
-            aim_value *= 1.0 + 0.04 * (12.0 - self.attrs.ar);
         }
-
         aim_value *= self.acc;
-        // * It is important to consider accuracy difficulty when scaling with accuracy.
-        aim_value *= 0.98 + f64::powf(f64::max(0.0, self.attrs.od()), 2.0) / 2500.0;
-
 
         aim_value
     }
@@ -301,10 +293,6 @@ impl OsuPerformanceCalculator<'_> {
                     None,
                     None,
                 );
-        } else if self.mods.hd() {
-            // * We want to give more reward for lower AR when it comes to aim and HD.
-            // * This nerfs high AR and buffs lower AR.
-            speed_value *= 1.0 + 0.04 * (12.0 - self.attrs.ar);
         }
 
         let speed_high_deviation_mult = self.calculate_speed_high_deviation_nerf(speed_deviation);
@@ -330,10 +318,7 @@ impl OsuPerformanceCalculator<'_> {
 
         let od = self.attrs.od();
 
-        // * Scale the speed value with accuracy and OD.
-        speed_value *= (0.95 + f64::powf(f64::max(0.0, od), 2.0) / 750.0)
-            * f64::powf((self.acc + relevant_acc) / 2.0, (14.5 - od) / 2.0);
-
+        speed_value *= f64::powf((self.acc + relevant_acc) / 2.0, (14.5 - od) / 2.0);
 
         speed_value
     }
@@ -426,10 +411,6 @@ impl OsuPerformanceCalculator<'_> {
 
         // * Scale the flashlight value with accuracy _slightly_.
         flashlight_value *= 0.5 + self.acc / 2.0;
-
-        // * It is important to also consider accuracy difficulty when doing that.
-        flashlight_value *= 0.98 + f64::powf(f64::max(0.0, self.attrs.od()), 2.0) / 2500.0;
-
 
         flashlight_value
     }
