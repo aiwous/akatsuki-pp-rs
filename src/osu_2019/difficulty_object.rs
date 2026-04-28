@@ -7,6 +7,7 @@ pub(crate) struct DifficultyObject<'h> {
     pub(crate) jump_dist: f32,
     pub(crate) travel_dist: f32,
     pub(crate) angle: Option<f32>,
+    pub(crate) normalised_pos: rosu_map::util::Pos,
 
     /// Angle of the movement vector (current - prev), normalised so that
     /// symmetrical vectors in any axis map to the same angle.
@@ -38,6 +39,7 @@ impl<'h> DifficultyObject<'h> {
         } else {
             ((pos - prev_cursor_pos) * scaling_factor).length()
         };
+        let normalised_pos = pos * scaling_factor;
 
         // Compute normalised vector angle if we have a previous object
         // and current is not a spinner
@@ -67,6 +69,7 @@ impl<'h> DifficultyObject<'h> {
             jump_dist,
             travel_dist,
             angle,
+            normalised_pos,
             normalised_vector_angle,
 
             delta,

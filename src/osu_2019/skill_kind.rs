@@ -11,6 +11,8 @@ const SPEED_BALANCING_FACTOR: f32 = 40.0;
 
 const AIM_ANGLE_BONUS_BEGIN: f32 = std::f32::consts::FRAC_PI_3;
 const TIMING_THRESHOLD: f32 = 107.0;
+const FLOW_DENSITY_TIMING_THRESHOLD: f32 = 52.0;
+const FLOW_DENSITY_MAX_BONUS: f32 = 15.0;
 
 // Angle repetition nerf constants (from kwotaq commit f3d97c08)
 const MAXIMUM_REPETITION_NERF: f32 = 0.08;
@@ -24,6 +26,7 @@ const NOTE_LIMIT: usize = 6;
 #[allow(dead_code)]
 pub(crate) struct RecentObject {
     pub(crate) normalised_vector_angle: Option<f32>,
+    pub(crate) normalised_pos: rosu_map::util::Pos,
     pub(crate) strain_time: f32,
     pub(crate) jump_dist: f32,
     pub(crate) angle: Option<f32>,
@@ -75,6 +78,7 @@ impl SkillKind {
 
                 // Penalize angle repetition (kwotaq angle repetition nerf)
                 aim_strain *= vector_angle_repetition(current, recent_objects);
+                aim_strain *= flow_density_bonus(current);
 
                 aim_strain
             }
@@ -177,8 +181,21 @@ fn vector_angle_repetition(current: &DifficultyObject<'_>, recent_objects: &[Rec
     let angle_diff_adjusted =
         (2.0 * ((curr_angle - last_angle).abs() * stack_factor).min(45.0_f32.to_radians())).cos();
 
+    // Reduce acute bonus when all three objects overlap and require little extra movement.
+    let mut overlapped_notes_weight = 1.0;
+
+    if recent_objects.len() >= 2 {
+        let prev_prev = &recent_objects[1];
+
+        let o1 = overlapness(current.normalised_pos, prev.normalised_pos);
+        let o2 = overlapness(current.normalised_pos, prev_prev.normalised_pos);
+        let o3 = overlapness(prev.normalised_pos, prev_prev.normalised_pos);
+
+        overlapped_notes_weight = 1.0 - o1 * o2 * o3;
+    }
+
     // CalcAcuteAngleBonus(lastAngle) — smoothstep from 140° to 40°
-    let acute_bonus = calc_acute_angle_bonus(last_angle);
+    let acute_bonus = calc_acute_angle_bonus(last_angle) * overlapped_notes_weight;
 
     let base_nerf = 1.0 - MAXIMUM_REPETITION_NERF * acute_bonus * angle_diff_adjusted;
 
@@ -201,6 +218,31 @@ fn smootherstep(x: f32, start: f32, end: f32) -> f32 {
 /// CalcAcuteAngleBonus — smoothstep from 140° (=0) to 40° (=1)
 fn calc_acute_angle_bonus(angle: f32) -> f32 {
     smoothstep(angle, 140.0_f32.to_radians(), 40.0_f32.to_radians())
+}
+
+/// Buff high density flow-aim patterns (fast + acute) without broadly buffing jumps.
+#[inline]
+fn flow_density_bonus(current: &DifficultyObject<'_>) -> f32 {
+    let Some(angle) = current.angle else {
+        return 1.0;
+    };
+
+    let fastness = ((FLOW_DENSITY_TIMING_THRESHOLD - current.strain_time)
+        / FLOW_DENSITY_TIMING_THRESHOLD)
+        .clamp(0.0, 1.0);
+    let acute = calc_acute_angle_bonus(angle);
+    let jump_control = (current.jump_dist / 120.0).clamp(0.0, 1.0);
+
+    1.0 + FLOW_DENSITY_MAX_BONUS * fastness * acute * jump_control
+}
+
+#[inline]
+fn overlapness(a: rosu_map::util::Pos, b: rosu_map::util::Pos) -> f32 {
+    let distance = (a - b).length();
+    let object_radius = NORMALISED_DIAMETER / 2.0;
+    let normalized = (distance - object_radius).max(0.0) / object_radius;
+
+    (1.0 - normalized * normalized).clamp(0.0, 1.0)
 }
 
 #[inline]

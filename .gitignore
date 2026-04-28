@@ -6,3 +6,7 @@ output*
 expanded.rs
 .sem/
 sem_diff*
+/src/bin/
+/.cache/
+Cargo.toml
+/target_temp/

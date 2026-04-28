@@ -282,7 +282,7 @@ impl<'m> OsuPP<'m> {
 
         if streams_nerf < 1.09 {
             let acc_factor = (1.0 - self.acc.unwrap()).abs();
-            acc_depression = (0.86 - acc_factor).max(0.5);
+            acc_depression = (0.83 - acc_factor).max(0.5);
 
             if acc_depression > 0.0 {
                 aim_value *= acc_depression;
@@ -360,7 +360,7 @@ impl<'m> OsuPP<'m> {
         let attributes = self.attributes.as_ref().unwrap();
 
         let mut speed_value =
-            (5.0 * (attributes.speed_strain as f32 / 0.0675).max(1.0) - 4.0).powi(3) / 100_000.0;
+            (5.0 * (attributes.speed_strain as f32 / 0.0690).max(1.0) - 4.0).powi(3) / 100_000.0;
 
         // Shorter maps are worth less
         let mut len_bonus = 0.81
@@ -368,7 +368,7 @@ impl<'m> OsuPP<'m> {
             + (total_hits > 2000.0) as u8 as f32 * -0.1 * (total_hits / 2000.0).log10();
 
         if len_bonus > 1.0 {
-            len_bonus = len_bonus.powf(0.88);
+            len_bonus = len_bonus.powf(3.0);
         }
 
         speed_value *= len_bonus;

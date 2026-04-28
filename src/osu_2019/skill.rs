@@ -73,6 +73,7 @@ impl Skill {
         // Update recent objects buffer (newest first)
         let recent = RecentObject {
             normalised_vector_angle: current.normalised_vector_angle,
+            normalised_pos: current.normalised_pos,
             strain_time: current.strain_time,
             jump_dist: current.jump_dist,
             angle: current.angle,
